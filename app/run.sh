@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# SAM3 Segmentation Studio - Development Server Launcher
+# MLX MedSAM3 - Development Server Launcher
 # Starts both backend (FastAPI) and frontend (Next.js) servers
 
 # Don't exit on error in cleanup - we want to clean up even if something fails
@@ -19,7 +19,7 @@ RED='\033[0;31m'
 NC='\033[0m' # No Color
 
 echo -e "${BLUE}╔════════════════════════════════════════╗${NC}"
-echo -e "${BLUE}║   SAM3 Segmentation Studio Launcher    ║${NC}"
+echo -e "${BLUE}║   MLX MedSAM3 Launcher                 ║${NC}"
 echo -e "${BLUE}╚════════════════════════════════════════╝${NC}"
 echo ""
 

@@ -9,7 +9,10 @@ interface Props {
   imageHeight: number;
   result: SegmentationResult | null;
   boxMode: "positive" | "negative";
+  pointMode: "positive" | "negative";
+  interactionMode: "box" | "point";
   onBoxDrawn: (box: number[]) => void;
+  onPointClicked: (point: number[]) => void;
   isLoading: boolean;
 }
 
@@ -67,7 +70,10 @@ export function SegmentationCanvas({
   imageHeight,
   result,
   boxMode,
+  pointMode,
+  interactionMode,
   onBoxDrawn,
+  onPointClicked,
   isLoading,
 }: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
@@ -210,8 +216,35 @@ export function SegmentationCanvas({
       }
     }
 
+    // Draw prompted points
+    if (result?.prompted_points) {
+      for (const promptedPoint of result.prompted_points) {
+        const [x, y] = promptedPoint.point;
+        const radius = 6;
+        const color = promptedPoint.label ? "#3beba1" : "#f87171";
+        
+        // Draw outer circle (white border)
+        ctx.beginPath();
+        ctx.arc(x * displayScale, y * displayScale, radius + 2, 0, 2 * Math.PI);
+        ctx.fillStyle = "#ffffff";
+        ctx.fill();
+        
+        // Draw inner circle (colored)
+        ctx.beginPath();
+        ctx.arc(x * displayScale, y * displayScale, radius, 0, 2 * Math.PI);
+        ctx.fillStyle = color;
+        ctx.fill();
+        
+        // Draw center dot
+        ctx.beginPath();
+        ctx.arc(x * displayScale, y * displayScale, 2, 0, 2 * Math.PI);
+        ctx.fillStyle = "#ffffff";
+        ctx.fill();
+      }
+    }
+
     // Draw current drawing box
-    if (isDrawing && startPoint && currentPoint) {
+    if (isDrawing && startPoint && currentPoint && interactionMode === "box") {
       const x = Math.min(startPoint.x, currentPoint.x);
       const y = Math.min(startPoint.y, currentPoint.y);
       const width = Math.abs(currentPoint.x - startPoint.x);
@@ -232,6 +265,7 @@ export function SegmentationCanvas({
     startPoint,
     currentPoint,
     boxMode,
+    interactionMode,
   ]);
 
   useEffect(() => {
@@ -253,14 +287,24 @@ export function SegmentationCanvas({
     if (isLoading) return;
     const coords = getCanvasCoordinates(e);
     if (coords) {
-      setIsDrawing(true);
-      setStartPoint(coords);
-      setCurrentPoint(coords);
+      if (interactionMode === "point") {
+        // Point mode: single click
+        const x = coords.x / displayScale;
+        const y = coords.y / displayScale;
+        const normalizedX = x / imageWidth;
+        const normalizedY = y / imageHeight;
+        onPointClicked([normalizedX, normalizedY]);
+      } else {
+        // Box mode: start drawing
+        setIsDrawing(true);
+        setStartPoint(coords);
+        setCurrentPoint(coords);
+      }
     }
   };
 
   const handleMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
-    if (!isDrawing) return;
+    if (!isDrawing || interactionMode === "point") return;
     const coords = getCanvasCoordinates(e);
     if (coords) {
       setCurrentPoint(coords);
@@ -268,6 +312,8 @@ export function SegmentationCanvas({
   };
 
   const handleMouseUp = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (interactionMode === "point") return; // Points are handled in mouseDown
+    
     if (!isDrawing || !startPoint) {
       setIsDrawing(false);
       return;
@@ -338,7 +384,13 @@ export function SegmentationCanvas({
         className={`rounded-lg shadow-xl ${
           isLoading ? "opacity-50 pointer-events-none" : ""
         }`}
-        style={{ cursor: isLoading ? "wait" : "crosshair" }}
+        style={{ 
+          cursor: isLoading 
+            ? "wait" 
+            : interactionMode === "point" 
+            ? "pointer" 
+            : "crosshair" 
+        }}
       />
       {isLoading && (
         <div className="absolute inset-0 flex items-center justify-center">

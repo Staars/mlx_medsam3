@@ -14,6 +14,10 @@ import {
   BoxSelect,
   Timer,
   Server,
+  MousePointer2,
+  MousePointerClick,
+  Stethoscope,
+  Lightbulb,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -23,12 +27,18 @@ import {
   uploadImage,
   segmentWithText,
   addBoxPrompt,
+  addPointPrompt,
   resetPrompts,
   checkHealth,
+  getModalities,
+  setModality,
   type SegmentationResult,
+  type ModalityConfig,
 } from "@/lib/api";
 
 type BoxMode = "positive" | "negative";
+type PointMode = "positive" | "negative";
+type InteractionMode = "box" | "point";
 
 interface TimingEntry {
   label: string;
@@ -54,12 +64,21 @@ export default function Home() {
   const [result, setResult] = useState<SegmentationResult | null>(null);
   const [textPrompt, setTextPrompt] = useState("");
   const [boxMode, setBoxMode] = useState<BoxMode>("positive");
+  const [pointMode, setPointMode] = useState<PointMode>("positive");
+  const [interactionMode, setInteractionMode] = useState<InteractionMode>("box");
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [backendStatus, setBackendStatus] = useState<
     "checking" | "online" | "offline"
   >("checking");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Medical imaging state
+  const [modalities, setModalities] = useState<string[]>([]);
+  const [selectedModality, setSelectedModality] = useState<string>("general");
+  const [modalityConfig, setModalityConfig] = useState<ModalityConfig | null>(null);
+  const [suggestions, setSuggestions] = useState<string[]>([]);
+  const [showSuggestions, setShowSuggestions] = useState(false);
 
   // Timing state (server-side processing times)
   const [timings, setTimings] = useState<TimingEntry[]>([]);
@@ -79,12 +98,25 @@ export default function Home() {
     []
   );
 
-  // Check backend health on mount
+  // Check backend health on mount and load modalities
   useEffect(() => {
     const checkBackend = async () => {
       try {
         const health = await checkHealth();
         setBackendStatus(health.model_loaded ? "online" : "checking");
+        
+        // Load modalities
+        if (health.model_loaded) {
+          try {
+            const modalitiesData = await getModalities();
+            setModalities(modalitiesData.modalities);
+            if (modalitiesData.configs.general) {
+              setModalityConfig(modalitiesData.configs.general);
+            }
+          } catch (err) {
+            console.error("Failed to load modalities:", err);
+          }
+        }
       } catch {
         setBackendStatus("offline");
       }
@@ -142,6 +174,7 @@ export default function Home() {
 
     setError(null);
     setIsLoading(true);
+    setShowSuggestions(false);
 
     try {
       const response = await segmentWithText(sessionId, textPrompt.trim());
@@ -152,6 +185,34 @@ export default function Home() {
     } finally {
       setIsLoading(false);
     }
+  };
+
+  const handleModalityChange = async (modality: string) => {
+    if (!sessionId) {
+      setSelectedModality(modality);
+      return;
+    }
+
+    setError(null);
+    setIsLoading(true);
+
+    try {
+      const response = await setModality(sessionId, modality);
+      setSelectedModality(modality);
+      setModalityConfig(response.config);
+      setSuggestions(response.suggestions);
+      setShowSuggestions(true);
+      addTiming(`Set Modality: ${modality}`, 0);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to set modality");
+    } finally {
+      setIsLoading(false);
+    }
+  };
+
+  const handleSuggestionClick = (suggestion: string) => {
+    setTextPrompt(suggestion);
+    setShowSuggestions(false);
   };
 
   const handleBoxDrawn = useCallback(
@@ -178,6 +239,32 @@ export default function Home() {
       }
     },
     [sessionId, boxMode, addTiming]
+  );
+
+  const handlePointClicked = useCallback(
+    async (point: number[]) => {
+      if (!sessionId) return;
+
+      setError(null);
+      setIsLoading(true);
+
+      try {
+        const response = await addPointPrompt(
+          sessionId,
+          point,
+          pointMode === "positive"
+        );
+        setResult(response.results);
+        addTiming(`Point (${pointMode})`, response.processing_time_ms);
+      } catch (err) {
+        setError(
+          err instanceof Error ? err.message : "Failed to add point prompt"
+        );
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [sessionId, pointMode, addTiming]
   );
 
   const handleReset = async () => {
@@ -217,12 +304,12 @@ export default function Home() {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-primary/20 rounded-lg pulse-glow">
-              <Sparkles className="w-6 h-6 text-primary" />
+              <Stethoscope className="w-6 h-6 text-primary" />
             </div>
             <div>
-              <h1 className="text-2xl font-bold tracking-tight">SAM3 Studio</h1>
+              <h1 className="text-2xl font-bold tracking-tight">MedSAM3 Studio</h1>
               <p className="text-sm text-muted-foreground">
-                Interactive segmentation with text & box prompts
+                Medical image segmentation with LoRA fine-tuning
               </p>
             </div>
           </div>
@@ -291,6 +378,61 @@ export default function Home() {
             </CardContent>
           </Card>
 
+          {/* Medical Modality Card */}
+          <Card>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <Stethoscope className="w-4 h-4" />
+                Medical Modality
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <select
+                value={selectedModality}
+                onChange={(e) => handleModalityChange(e.target.value)}
+                disabled={isLoading}
+                className="w-full p-2 border border-border rounded-md bg-background text-sm"
+              >
+                {modalities.map((mod) => (
+                  <option key={mod} value={mod}>
+                    {mod.toUpperCase()}
+                  </option>
+                ))}
+              </select>
+              {modalityConfig && (
+                <div className="text-xs text-muted-foreground space-y-1">
+                  <div className="flex justify-between">
+                    <span>Confidence:</span>
+                    <span className="font-mono">{modalityConfig.confidence_threshold}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span>NMS:</span>
+                    <span className="font-mono">{modalityConfig.nms_threshold}</span>
+                  </div>
+                </div>
+              )}
+              {suggestions.length > 0 && showSuggestions && (
+                <div className="space-y-2">
+                  <div className="flex items-center gap-2 text-xs text-muted-foreground">
+                    <Lightbulb className="w-3 h-3" />
+                    <span>Suggested prompts:</span>
+                  </div>
+                  <div className="flex flex-wrap gap-1">
+                    {suggestions.slice(0, 6).map((suggestion) => (
+                      <button
+                        key={suggestion}
+                        onClick={() => handleSuggestionClick(suggestion)}
+                        className="px-2 py-1 text-xs bg-primary/10 hover:bg-primary/20 text-primary rounded-full transition-colors"
+                      >
+                        {suggestion}
+                      </button>
+                    ))}
+                  </div>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
           {/* Text Prompt Card */}
           <Card className={!sessionId ? "opacity-50 pointer-events-none" : ""}>
             <CardHeader className="pb-3">
@@ -335,36 +477,115 @@ export default function Home() {
               </p>
               <div className="flex gap-2">
                 <Button
-                  variant={boxMode === "positive" ? "default" : "secondary"}
+                  variant={
+                    interactionMode === "box" && boxMode === "positive"
+                      ? "default"
+                      : "secondary"
+                  }
                   size="sm"
-                  onClick={() => setBoxMode("positive")}
+                  onClick={() => {
+                    setInteractionMode("box");
+                    setBoxMode("positive");
+                  }}
                   className="flex-1"
                 >
                   <Square className="w-4 h-4 mr-1" />
                   Include
                 </Button>
                 <Button
-                  variant={boxMode === "negative" ? "destructive" : "secondary"}
+                  variant={
+                    interactionMode === "box" && boxMode === "negative"
+                      ? "destructive"
+                      : "secondary"
+                  }
                   size="sm"
-                  onClick={() => setBoxMode("negative")}
+                  onClick={() => {
+                    setInteractionMode("box");
+                    setBoxMode("negative");
+                  }}
                   className="flex-1"
                 >
                   <SquareMinus className="w-4 h-4 mr-1" />
                   Exclude
                 </Button>
               </div>
-              <div className="flex items-center gap-2 text-xs">
-                <div
-                  className={`w-3 h-3 rounded border-2 ${
-                    boxMode === "positive"
-                      ? "border-primary bg-primary/20"
-                      : "border-muted"
-                  }`}
-                />
-                <span className="text-muted-foreground">
-                  Drawing: {boxMode === "positive" ? "Include" : "Exclude"}
-                </span>
+              {interactionMode === "box" && (
+                <div className="flex items-center gap-2 text-xs">
+                  <div
+                    className={`w-3 h-3 rounded border-2 ${
+                      boxMode === "positive"
+                        ? "border-primary bg-primary/20"
+                        : "border-destructive bg-destructive/20"
+                    }`}
+                  />
+                  <span className="text-muted-foreground">
+                    Drawing: {boxMode === "positive" ? "Include" : "Exclude"}
+                  </span>
+                </div>
+              )}
+            </CardContent>
+          </Card>
+
+          {/* Point Prompt Card */}
+          <Card className={!sessionId ? "opacity-50 pointer-events-none" : ""}>
+            <CardHeader className="pb-3">
+              <CardTitle className="text-base flex items-center gap-2">
+                <MousePointer2 className="w-4 h-4" />
+                Point Prompts
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-3">
+              <p className="text-xs text-muted-foreground">
+                Click points on the image to include or exclude regions
+              </p>
+              <div className="flex gap-2">
+                <Button
+                  variant={
+                    interactionMode === "point" && pointMode === "positive"
+                      ? "default"
+                      : "secondary"
+                  }
+                  size="sm"
+                  onClick={() => {
+                    setInteractionMode("point");
+                    setPointMode("positive");
+                  }}
+                  className="flex-1"
+                >
+                  <MousePointerClick className="w-4 h-4 mr-1" />
+                  Include
+                </Button>
+                <Button
+                  variant={
+                    interactionMode === "point" && pointMode === "negative"
+                      ? "destructive"
+                      : "secondary"
+                  }
+                  size="sm"
+                  onClick={() => {
+                    setInteractionMode("point");
+                    setPointMode("negative");
+                  }}
+                  className="flex-1"
+                >
+                  <MousePointerClick className="w-4 h-4 mr-1" />
+                  Exclude
+                </Button>
               </div>
+              {interactionMode === "point" && (
+                <div className="flex items-center gap-2 text-xs">
+                  <div
+                    className={`w-3 h-3 rounded-full border-2 ${
+                      pointMode === "positive"
+                        ? "border-primary bg-primary/20"
+                        : "border-destructive bg-destructive/20"
+                    }`}
+                  />
+                  <span className="text-muted-foreground">
+                    Clicking: {pointMode === "positive" ? "Include" : "Exclude"}
+                  </span>
+                </div>
+              )}
             </CardContent>
           </Card>
 
@@ -383,6 +604,14 @@ export default function Home() {
                   <span className="text-muted-foreground">Box prompts:</span>
                   <span className="font-medium">
                     {result.prompted_boxes.length}
+                  </span>
+                </div>
+              )}
+              {result?.prompted_points && result.prompted_points.length > 0 && (
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Point prompts:</span>
+                  <span className="font-medium">
+                    {result.prompted_points.length}
                   </span>
                 </div>
               )}
@@ -496,7 +725,10 @@ export default function Home() {
                 imageHeight={imageHeight}
                 result={result}
                 boxMode={boxMode}
+                pointMode={pointMode}
+                interactionMode={interactionMode}
                 onBoxDrawn={handleBoxDrawn}
+                onPointClicked={handlePointClicked}
                 isLoading={isLoading}
               />
             </CardContent>
@@ -513,6 +745,12 @@ export default function Home() {
               </div>
               <div className="flex items-center gap-2">
                 <kbd className="px-2 py-1 bg-card rounded border border-border font-mono">
+                  Click
+                </kbd>
+                <span>Add point</span>
+              </div>
+              <div className="flex items-center gap-2">
+                <kbd className="px-2 py-1 bg-card rounded border border-border font-mono">
                   Enter
                 </kbd>
                 <span>Submit text prompt</span>
@@ -525,7 +763,7 @@ export default function Home() {
       {/* Footer */}
       <footer className="max-w-7xl mx-auto mt-12 pt-6 border-t border-border">
         <p className="text-xs text-muted-foreground text-center">
-          SAM3 Interactive Segmentation • MLX Backend • Next.js Frontend
+          MedSAM3 Medical Image Segmentation • 10+ Modalities • LoRA Fine-Tuning • MLX Backend • Next.js Frontend
         </p>
       </footer>
     </main>

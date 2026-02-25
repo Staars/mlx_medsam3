@@ -1,7 +1,7 @@
 import time
 from functools import partial
 
-from typing import Dict, List
+from typing import Dict, List, Optional
 import PIL
 from PIL import Image
 import numpy as np
@@ -9,17 +9,27 @@ import mlx.core as mx
 
 from sam3.model import box_ops
 from sam3.model.data_misc import FindStage, interpolate
+from sam3.medical_utils import (
+    preprocess_medical_image,
+    MedicalModalityConfig,
+    get_medical_prompt_suggestions
+)
 
 # TODO: remove this, using for testing
 import torch
 from torchvision.transforms import v2
 
 
-def transform(image_path_or_pil, resolution):
+def transform(image_path_or_pil, resolution, modality=None):
     if isinstance(image_path_or_pil, str):
         img = Image.open(image_path_or_pil).convert("RGB")
     else:
         img = image_path_or_pil.convert("RGB")
+    
+    # Apply medical preprocessing if modality specified
+    if modality and modality != "general":
+        img_np, config = preprocess_medical_image(img, modality)
+        img = Image.fromarray((img_np * 127.5 + 127.5).astype(np.uint8))
     
     img = img.resize((resolution, resolution), resample=Image.Resampling.LANCZOS)
     img_np = np.array(img).astype(np.float32) / 255.0 # [H, W, C]
@@ -29,11 +39,27 @@ def transform(image_path_or_pil, resolution):
     return mx.array(img_np).transpose(2, 0, 1)  # [H, W, C] -> [C, H, W]
 
 class Sam3Processor:
-    def __init__(self, model, resolution=1008, confidence_threshold=0.5):
+    def __init__(
+        self,
+        model,
+        resolution=1008,
+        confidence_threshold=0.5,
+        modality: Optional[str] = None
+    ):
         self.model = model
         self.resolution = resolution
-        self.confidence_threshold = confidence_threshold
-        self.transform = partial(transform, resolution=self.resolution)
+        self.modality = modality or "general"
+        
+        # Use modality-specific threshold if available
+        if modality:
+            config = MedicalModalityConfig.get_config(modality)
+            self.confidence_threshold = config.get("confidence_threshold", confidence_threshold)
+            self.nms_threshold = config.get("nms_threshold", 0.5)
+        else:
+            self.confidence_threshold = confidence_threshold
+            self.nms_threshold = 0.5
+        
+        self.transform = partial(transform, resolution=self.resolution, modality=self.modality)
 
 
         self.find_stage = FindStage(
@@ -123,6 +149,32 @@ class Sam3Processor:
 
         return self._call_grounding(state)
 
+    def add_point_prompt(self, point: List, label: bool, state: Dict):
+        """Adds a point prompt and run the inference.
+        The image needs to be set, but not necessarily the text prompt.
+        The point is assumed to be in [x, y] format and normalized in [0, 1] range.
+        The label is True for a positive point, False for a negative point.
+        """
+        if "backbone_out" not in state:
+            raise ValueError("You must call set_image before add_point_prompt")
+
+        if "language_features" not in state["backbone_out"]:
+            # No text prompt yet - use "visual" to rely only on geometric prompt
+            dummy_text_outputs = self.model.backbone.call_text(
+                ["visual"]
+            )
+            state["backbone_out"].update(dummy_text_outputs)
+
+        if "geometric_prompt" not in state:
+            state["geometric_prompt"] = self.model._get_dummy_prompt()
+
+        # adding a batch and sequence dimension
+        points = mx.array(point, dtype=mx.float32).reshape(1, 1, 2)
+        labels = mx.array([label], dtype=mx.bool_).reshape(1, 1)
+        state["geometric_prompt"].append_points(points, labels)
+
+        return self._call_grounding(state)
+
     def reset_all_prompts(self, state: Dict):
         """Removes all the prompts and results"""
         if "backbone_out" in state:
@@ -141,7 +193,26 @@ class Sam3Processor:
                 del state[key]
 
     def set_confidence_threshold(self, threshold: float, state=None):
-        pass
+        """Update confidence threshold."""
+        self.confidence_threshold = threshold
+    
+    def set_modality(self, modality: str):
+        """
+        Set medical imaging modality and update thresholds accordingly.
+        
+        Args:
+            modality: Medical imaging modality (ct, mri, xray, ultrasound, etc.)
+        """
+        self.modality = modality
+        config = MedicalModalityConfig.get_config(modality)
+        self.confidence_threshold = config.get("confidence_threshold", 0.5)
+        self.nms_threshold = config.get("nms_threshold", 0.5)
+        self.transform = partial(transform, resolution=self.resolution, modality=self.modality)
+        print(f"Set modality to {modality}: confidence={self.confidence_threshold}, nms={self.nms_threshold}")
+    
+    def get_medical_suggestions(self) -> List[str]:
+        """Get suggested medical prompts for current modality."""
+        return get_medical_prompt_suggestions(self.modality)
 
     def _call_grounding(self, state: Dict):
         outputs = self.model.call_grounding(

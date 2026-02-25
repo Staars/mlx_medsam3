@@ -20,12 +20,14 @@ export interface SegmentationResult {
   boxes?: number[][];     // [N, 4] as [x0, y0, x1, y1]
   scores?: number[];      // [N]
   prompted_boxes?: { box: number[]; label: boolean }[];
+  prompted_points?: { point: number[]; label: boolean }[];
 }
 
 export interface SegmentResponse {
   session_id: string;
   prompt?: string;
   box_type?: string;
+  point_type?: string;
   results: SegmentationResult;
   processing_time_ms: number;
 }
@@ -88,6 +90,20 @@ export async function addBoxPrompt(
   );
 }
 
+export async function addPointPrompt(
+  sessionId: string,
+  point: number[],
+  label: boolean
+): Promise<SegmentResponse> {
+  return apiFetch<SegmentResponse>(() =>
+    fetch(`${API_BASE}/segment/point`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, point, label }),
+    })
+  );
+}
+
 export async function resetPrompts(sessionId: string): Promise<ResetResponse> {
   return apiFetch<ResetResponse>(() =>
     fetch(`${API_BASE}/reset`, {
@@ -104,3 +120,53 @@ export async function checkHealth(): Promise<{ status: string; model_loaded: boo
   );
 }
 
+// Medical imaging APIs
+export interface ModalityConfig {
+  confidence_threshold: number;
+  nms_threshold: number;
+  [key: string]: any;
+}
+
+export interface ModalitiesResponse {
+  modalities: string[];
+  configs: Record<string, ModalityConfig>;
+}
+
+export interface SuggestionsResponse {
+  modality: string;
+  suggestions: string[];
+  config: ModalityConfig;
+}
+
+export interface ModalityResponse {
+  session_id: string;
+  modality: string;
+  config: ModalityConfig;
+  suggestions: string[];
+  message: string;
+}
+
+export async function getModalities(): Promise<ModalitiesResponse> {
+  return apiFetch<ModalitiesResponse>(() =>
+    fetch(`${API_BASE}/modalities`)
+  );
+}
+
+export async function getMedicalSuggestions(modality: string): Promise<SuggestionsResponse> {
+  return apiFetch<SuggestionsResponse>(() =>
+    fetch(`${API_BASE}/medical/suggestions/${modality}`)
+  );
+}
+
+export async function setModality(
+  sessionId: string,
+  modality: string
+): Promise<ModalityResponse> {
+  return apiFetch<ModalityResponse>(() =>
+    fetch(`${API_BASE}/modality`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, modality }),
+    })
+  );
+}

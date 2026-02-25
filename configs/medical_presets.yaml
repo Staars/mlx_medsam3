@@ -1,0 +1,141 @@
+# Medical Imaging Modality Presets
+# Optimized configurations for different medical imaging types
+
+presets:
+  # Computed Tomography
+  ct:
+    confidence_threshold: 0.6
+    nms_threshold: 0.5
+    preprocessing:
+      normalize: true
+      window_level: 40        # HU window level
+      window_width: 400       # HU window width
+    common_concepts:
+      - "lung nodule"
+      - "liver lesion"
+      - "kidney stone"
+      - "bone fracture"
+      - "tumor"
+  
+  # Magnetic Resonance Imaging
+  mri:
+    confidence_threshold: 0.6
+    nms_threshold: 0.5
+    preprocessing:
+      normalize: true
+      intensity_normalization: "z-score"
+    common_concepts:
+      - "brain tumor"
+      - "lesion"
+      - "edema"
+      - "white matter"
+      - "gray matter"
+  
+  # X-Ray
+  xray:
+    confidence_threshold: 0.55
+    nms_threshold: 0.5
+    preprocessing:
+      normalize: true
+      contrast_enhancement: true
+    common_concepts:
+      - "pneumonia"
+      - "fracture"
+      - "nodule"
+      - "cardiomegaly"
+      - "pleural effusion"
+  
+  # Ultrasound
+  ultrasound:
+    confidence_threshold: 0.45
+    nms_threshold: 0.4
+    preprocessing:
+      normalize: true
+      speckle_reduction: true
+    common_concepts:
+      - "fetus"
+      - "cyst"
+      - "mass"
+      - "vessel"
+      - "organ boundary"
+  
+  # Microscopy
+  microscopy:
+    confidence_threshold: 0.7
+    nms_threshold: 0.6
+    preprocessing:
+      normalize: true
+      color_normalization: "macenko"
+    common_concepts:
+      - "cell"
+      - "nucleus"
+      - "mitosis"
+      - "tissue"
+      - "bacteria"
+  
+  # Endoscopy
+  endoscopy:
+    confidence_threshold: 0.5
+    nms_threshold: 0.5
+    preprocessing:
+      normalize: true
+      color_correction: true
+    common_concepts:
+      - "polyp"
+      - "lesion"
+      - "ulcer"
+      - "bleeding"
+      - "tumor"
+  
+  # Histopathology
+  histopathology:
+    confidence_threshold: 0.65
+    nms_threshold: 0.5
+    preprocessing:
+      normalize: true
+      stain_normalization: true
+    common_concepts:
+      - "tumor region"
+      - "necrosis"
+      - "stroma"
+      - "epithelium"
+      - "lymphocyte"
+  
+  # Dermoscopy
+  dermoscopy:
+    confidence_threshold: 0.6
+    nms_threshold: 0.5
+    preprocessing:
+      normalize: true
+      hair_removal: true
+    common_concepts:
+      - "melanoma"
+      - "nevus"
+      - "lesion"
+      - "skin cancer"
+      - "pigmentation"
+  
+  # OCT (Optical Coherence Tomography)
+  oct:
+    confidence_threshold: 0.6
+    nms_threshold: 0.5
+    preprocessing:
+      normalize: true
+      denoising: true
+    common_concepts:
+      - "retinal layer"
+      - "fluid"
+      - "drusen"
+      - "hemorrhage"
+      - "edema"
+  
+  # General (default)
+  general:
+    confidence_threshold: 0.5
+    nms_threshold: 0.5
+    preprocessing:
+      normalize: true
+    common_concepts:
+      - "region of interest"
+      - "abnormality"
+      - "structure"

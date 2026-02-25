@@ -1,4 +1,5 @@
 import os
+from typing import Optional, List, Set
 
 import mlx.core as mx
 import mlx.nn as nn
@@ -24,6 +25,7 @@ from sam3.model.model_misc import (
     MultiheadAttentionWrapper as MultiheadAttention,
     TransformerWrapper
 )
+from sam3.lora import inject_lora_into_linear, count_lora_parameters
 
 
 def _create_position_encoding(precompute_resolution=None):
@@ -300,7 +302,8 @@ def build_sam3_image_model(
     convert_from_pytorch=False,
     enable_segmentation=True,
     enable_inst_interactivity=False,
-    compile=False
+    compile=False,
+    lora_config: Optional[dict] = None
 ):
     if bpe_path is None:
         bpe_path = os.path.join(
@@ -348,6 +351,44 @@ def build_sam3_image_model(
             )
     
     load_checkpoint(model, f"{checkpoint_path}")
+
+    # Apply LoRA if configured
+    if lora_config is not None and lora_config.get("enabled", False):
+        print("\n=== Applying LoRA Configuration ===")
+        
+        # Determine which components to apply LoRA to
+        component_filter = set()
+        if lora_config.get("apply_to_vision_encoder", True):
+            component_filter.add("backbone.visual.trunk")
+        if lora_config.get("apply_to_text_encoder", True):
+            component_filter.add("backbone.text")
+        if lora_config.get("apply_to_geometry_encoder", False):
+            component_filter.add("input_geometry_encoder")
+        if lora_config.get("apply_to_detr_encoder", True):
+            component_filter.add("transformer.encoder")
+        if lora_config.get("apply_to_detr_decoder", True):
+            component_filter.add("transformer.decoder")
+        if lora_config.get("apply_to_mask_decoder", False):
+            component_filter.add("segmentation_head")
+        
+        # Inject LoRA layers
+        num_lora_layers = inject_lora_into_linear(
+            model,
+            target_modules=lora_config.get("target_modules", ["q_proj", "v_proj"]),
+            rank=lora_config.get("rank", 8),
+            alpha=lora_config.get("alpha", 16.0),
+            dropout=lora_config.get("dropout", 0.0),
+            component_filter=component_filter if component_filter else None,
+        )
+        
+        # Count parameters
+        lora_params, total_params = count_lora_parameters(model)
+        trainable_pct = (lora_params / total_params * 100) if total_params > 0 else 0
+        
+        print(f"Injected LoRA into {num_lora_layers} layers")
+        print(f"LoRA parameters: {lora_params:,} ({trainable_pct:.2f}% of total)")
+        print(f"Total parameters: {total_params:,}")
+        print("=== LoRA Configuration Complete ===\n")
 
     model.eval()
 

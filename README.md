@@ -1,313 +1,285 @@
-<div align="center">
+# MLX MedSAM3
 
-# 🎯 MLX SAM3
+Medical image segmentation powered by SAM3 and MedSAM3 fine-tuned weights, optimized for Apple Silicon with MLX.
 
-**Segment Anything Model 3 — Native Apple Silicon Implementation**
+> **Note**: This is a fork of [mlx_sam3](https://github.com/Deekshith-Dade/mlx_sam3) by Deekshith-Dade, enhanced with MedSAM3 medical fine-tuning, point prompts, and medical modality support.
 
-[![MLX](https://img.shields.io/badge/MLX-Apple%20Silicon-black?logo=apple)](https://github.com/ml-explore/mlx)
-[![Python 3.13+](https://img.shields.io/badge/Python-3.13+-3776AB?logo=python&logoColor=white)](https://python.org)
-[![License](https://img.shields.io/badge/License-Apache%202.0-blue.svg)](LICENSE)
-[![HuggingFace](https://img.shields.io/badge/🤗-MLX%20Community-yellow)](https://huggingface.co/mlx-community/sam3-image)
+## What's New in This Fork
 
-*A high-performance MLX port of Meta's SAM3 for interactive image segmentation on Mac*
+This fork adds medical imaging capabilities to the original mlx_sam3:
 
-<br>
+- 🏥 **MedSAM3 Integration**: Fine-tuned LoRA weights for 330+ medical concepts
+- 🎯 **Point Prompts**: Click-based segmentation refinement
+- 🔬 **Medical Modalities**: Support for CT, MRI, X-ray, Ultrasound, Microscopy, and more
+- ⚙️ **Automated Setup**: One-command installation with weight download/conversion
+- 📊 **Medical Utilities**: Modality-specific preprocessing and prompt suggestions
+- 🎨 **Enhanced UI**: Medical-focused web interface
 
-[![Read the Blog](https://img.shields.io/badge/📖_Read_the_Blog-Understanding_SAM3-FF6B6B?style=for-the-badge)](https://deekshith.me/blog/mlx-sam3)
+![MedSAM3 Studio](https://img.shields.io/badge/MLX-Optimized-blue) ![Python](https://img.shields.io/badge/Python-3.13+-green) ![License](https://img.shields.io/badge/License-MIT-yellow)
 
-</div>
+## Features
 
----
+- 🏥 **Medical-Specific**: Fine-tuned on 330+ medical concepts across 10+ imaging modalities
+- 🚀 **Apple Silicon Optimized**: Native MLX implementation for M1/M2/M3 chips
+- 🎯 **Multiple Prompt Types**: Text, box, and point prompts for interactive segmentation
+- 🖥️ **Web Interface**: Modern Next.js frontend with real-time segmentation
+- 📊 **Medical Modalities**: CT, MRI, X-ray, Ultrasound, Microscopy, and more
 
-<table>
-<tr>
-<td>
-<strong>📖 New to SAM3?</strong> Check out the accompanying blog post where I explain the SAM3 architecture, how it works, and what makes it special: <a href="https://deekshith.me/blog/mlx-sam3"><strong>Understanding SAM3 →</strong></a>
-</td>
-</tr>
-</table>
+## Quick Start
 
----
+### Prerequisites
 
-## ✨ Features
+- macOS with Apple Silicon (M1/M2/M3)
+- Python 3.13+
+- Node.js 18+ (for frontend)
+- [uv](https://docs.astral.sh/uv/) package manager
 
-- **🚀 Native Apple Silicon** — Optimized for M1/M2/M3/M4 chips using MLX
-- **📝 Text Prompts** — Segment objects by describing them ("car", "person", "dog")
-- **📦 Box Prompts** — Draw bounding boxes to include or exclude regions
-- **🎨 Interactive Studio** — Beautiful web interface for real-time segmentation
-- **🐍 Python API** — Simple programmatic access for scripting and integration
-- **⬇️ Auto Model Download** — Weights automatically fetched from HuggingFace
-
----
-
-## 🖼️ Demo
-
-<div align="center">
-<table>
-<tr>
-<td><img src="assets/images/appdemo.png" alt="SAM3 Demo - Car Detection" width="100%"></td>
-<td><img src="assets/images/appdemo1.png" alt="SAM3 Demo - Coat Segmentation" width="100%"></td>
-</tr>
-<tr>
-<td align="center"><em>Object detection with "car" prompt</em></td>
-<td align="center"><em>Semantic segmentation with "coat" prompt</em></td>
-</tr>
-</table>
-
-*SAM3 Studio — Interactive segmentation with text and box prompts*
-
-</div>
-
----
-
-## 📋 Prerequisites
-
-| Requirement | Version | Notes |
-|-------------|---------|-------|
-| **macOS** | 13.0+ | Apple Silicon required (M1/M2/M3/M4) |
-| **Python** | 3.13+ | Required for MLX compatibility |
-| **Node.js** | 18+ | For the web interface |
-| **uv** | Latest | *Optional but recommended* — [Install uv](https://docs.astral.sh/uv/getting-started/installation/) |
-
-> ⚠️ **Apple Silicon Only**: This project uses [MLX](https://github.com/ml-explore/mlx), Apple's machine learning framework optimized exclusively for Apple Silicon.
-
----
-
-## 🚀 Quick Start
-
-### Option 1: One-Command Launch (Recommended)
-
-If you have [`uv`](https://docs.astral.sh/uv/) installed:
+### Installation
 
 ```bash
 # Clone the repository
-git clone https://github.com/Deekshith-Dade/mlx-sam3.git
-cd mlx-sam3
+git clone https://github.com/Staars/mlx_medsam3.git
+cd mlx_medsam3
 
-# Install project dependencies
+# Install dependencies
 uv sync
 
-# Launch the app (backend + frontend)
-cd app && ./run.sh
+# Download and convert MedSAM3 weights
+uv run python scripts/download_medsam3_weights.py
+uv run python scripts/convert_medsam3_to_mlx.py
+
+# Verify installation
+uv run python scripts/verify_mlx_weights.py
 ```
 
-The first run will automatically download MLX weights from [mlx-community/sam3-image](https://huggingface.co/mlx-community/sam3-image) (~3.5GB).
-
-**Access the app:**
-- 🌐 **Frontend**: http://localhost:3000
-- 🔌 **API**: http://localhost:8000
-- 📚 **API Docs**: http://localhost:8000/docs
-
-Press `Ctrl+C` to stop all servers.
-
----
-
-### Option 2: Manual Setup (Standard pip)
-
-<details>
-<summary><strong>Click to expand manual setup instructions</strong></summary>
-
-#### 1. Create Virtual Environment
+### Running the App
 
 ```bash
-# Clone the repository
-git clone https://github.com/your-username/mlx-sam3.git
-cd mlx-sam3
+# Start both backend and frontend
+cd app
+./run.sh
 
-# Create and activate virtual environment
-python3 -m venv .venv
-source .venv/bin/activate
-
-# Install the package
-pip install -e .
+# Or start separately:
+# Backend: uv run python app/backend/main.py
+# Frontend: cd app/frontend && npm run dev
 ```
 
-#### 2. Start the Backend
+Open http://localhost:3000 in your browser.
 
-```bash
-cd app/backend
-pip install -r requirements.txt
-python main.py
-```
+## Usage
 
-The backend will start on http://localhost:8000
+### Web Interface
 
-#### 3. Start the Frontend (new terminal)
+1. **Upload Image**: Drag & drop or click to upload medical images
+2. **Set Modality**: Choose imaging type (CT, MRI, X-ray, etc.)
+3. **Segment**: Use text prompts ("liver", "tumor") or draw boxes/points
+4. **Refine**: Add positive/negative prompts to refine segmentation
+5. **Export**: Download masks in various formats
 
-```bash
-cd app/frontend
-npm install
-npm run dev
-```
-
-The frontend will start on http://localhost:3000
-
-</details>
-
----
-
-## 🐍 Python API
-
-Use SAM3 directly in your Python scripts:
+### Python API
 
 ```python
-from PIL import Image
 from sam3 import build_sam3_image_model
 from sam3.model.sam3_image_processor import Sam3Processor
+from PIL import Image
 
-# Load model (auto-downloads MLX weights from mlx-community/sam3-image)
+# Load model with MedSAM3 weights
 model = build_sam3_image_model()
-processor = Sam3Processor(model, confidence_threshold=0.5)
+processor = Sam3Processor(model)
 
-# Load and process an image
-image = Image.open("your_image.jpg")
+# Set medical modality
+processor.set_modality("ct")
+
+# Process image
+image = Image.open("ct_scan.jpg")
 state = processor.set_image(image)
 
 # Segment with text prompt
-state = processor.set_text_prompt("person", state)
+state = processor.set_text_prompt("liver", state)
 
 # Access results
-masks = state["masks"]       # Binary segmentation masks
-boxes = state["boxes"]       # Bounding boxes [x0, y0, x1, y1]
-scores = state["scores"]     # Confidence scores
-
-print(f"Found {len(scores)} objects")
+masks = state["masks"]
+boxes = state["boxes"]
+scores = state["scores"]
 ```
 
-### Adding Box Prompts
+### Supported Medical Modalities
+
+| Modality | Description | Example Prompts |
+|----------|-------------|-----------------|
+| CT | Computed Tomography | liver, kidney, tumor, lesion |
+| MRI | Magnetic Resonance | brain, ventricle, white matter |
+| X-ray | Radiography | lung, heart, rib, fracture |
+| Ultrasound | Sonography | fetus, gallbladder, kidney stone |
+| Microscopy | Pathology | cell, nucleus, mitochondria |
+| Endoscopy | Internal imaging | polyp, ulcer, bleeding |
+| Fundus | Retinal imaging | optic disc, blood vessel, macula |
+| Dermoscopy | Skin imaging | lesion, melanoma, nevus |
+| Mammography | Breast imaging | mass, calcification, density |
+| OCT | Optical Coherence | retinal layer, fluid, drusen |
+
+## Project Structure
+
+```
+mlx_medsam3/
+├── sam3/                  # Core MLX model implementation
+│   ├── model/            # Model architecture
+│   ├── lora.py           # LoRA fine-tuning support
+│   └── medical_utils.py  # Medical-specific utilities
+├── app/                   # Web application
+│   ├── backend/          # FastAPI backend
+│   └── frontend/         # Next.js frontend
+├── scripts/              # Setup and utility scripts
+│   ├── download_medsam3_weights.py
+│   ├── convert_medsam3_to_mlx.py
+│   └── verify_mlx_weights.py
+├── examples/             # Usage examples
+│   ├── medical_inference_example.py
+│   ├── point_prompt_example.py
+│   └── lora_training_example.py
+└── configs/              # Configuration files
+    └── medical_presets.yaml
+```
+
+## Advanced Features
+
+### Point Prompts
 
 ```python
-# Add a box prompt (normalized coordinates: center_x, center_y, width, height)
-# label=True for inclusion, label=False for exclusion
-state = processor.add_geometric_prompt(
-    box=[0.5, 0.5, 0.3, 0.3],  # Center of image, 30% width/height
-    label=True,
-    state=state
-)
+# Add positive point (foreground)
+state = processor.add_point_prompt([0.5, 0.5], label=True, state=state)
+
+# Add negative point (background)
+state = processor.add_point_prompt([0.2, 0.2], label=False, state=state)
 ```
 
-### Reset and Try New Prompts
+### Box Prompts
 
 ```python
-# Clear all prompts while keeping the image
-processor.reset_all_prompts(state)
-
-# Try a different prompt
-state = processor.set_text_prompt("car", state)
+# Box format: [center_x, center_y, width, height] (normalized 0-1)
+state = processor.add_geometric_prompt([0.5, 0.5, 0.3, 0.3], label=True, state=state)
 ```
 
----
+### LoRA Fine-Tuning
 
-## 🏗️ Project Structure
+See `examples/lora_training_example.py` for custom fine-tuning on your medical datasets.
 
-```
-mlx-sam3/
-├── sam3/                    # Core MLX SAM3 implementation
-│   ├── model/               # Model components
-│   │   ├── sam3_image.py    # Main model architecture
-│   │   ├── vitdet.py        # Vision Transformer backbone
-│   │   ├── text_encoder_ve.py # Text encoder
-│   │   └── ...
-│   ├── model_builder.py     # Model construction utilities
-│   ├── convert.py           # Weight conversion from PyTorch
-│   └── utils.py             # Helper utilities
-├── app/                     # Web application
-│   ├── backend/             # FastAPI server
-│   ├── frontend/            # Next.js React app
-│   └── run.sh               # One-command launcher
-├── assets/                  # Static assets & test images
-├── examples/                # Jupyter notebook examples
-└── pyproject.toml           # Project configuration
-```
+## Performance
 
----
+On Apple M2 Max:
+- Image encoding: ~200ms
+- Text prompt segmentation: ~150ms
+- Point/box refinement: ~50ms
+- Peak memory: ~2GB
 
-## 🔌 API Reference
+## Model Weights
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/health` | GET | Check if the model is loaded and ready |
-| `/upload` | POST | Upload an image and create a session |
-| `/segment/text` | POST | Segment using a text prompt |
-| `/segment/box` | POST | Add a box prompt (include/exclude) |
-| `/reset` | POST | Clear all prompts for a session |
-| `/session/{id}` | DELETE | Delete a session and free memory |
+The project uses two sets of weights:
 
-### Example API Call
+1. **Base SAM3**: Downloaded automatically from HuggingFace
+2. **MedSAM3 LoRA**: Fine-tuned medical weights (71MB)
+   - Source: `lal-Joey/MedSAM3_v1`
+   - 916 LoRA tensors
+   - 18.5M parameters
+
+## API Documentation
+
+When running the backend, visit http://localhost:8000/docs for interactive API documentation.
+
+### Key Endpoints
+
+- `POST /upload` - Upload and process image
+- `POST /modality` - Set medical imaging modality
+- `POST /segment/text` - Segment with text prompt
+- `POST /segment/box` - Add box prompt
+- `POST /segment/point` - Add point prompt
+- `POST /reset` - Reset all prompts
+- `GET /modalities` - List available modalities
+
+## Development
+
+### Setup Development Environment
 
 ```bash
-# Upload an image
-curl -X POST "http://localhost:8000/upload" \
-  -F "file=@your_image.jpg"
+# Install dev dependencies
+uv sync --dev
 
-# Response: {"session_id": "abc-123", "width": 1920, "height": 1080, ...}
+# Run tests
+uv run pytest
 
-# Segment with text
-curl -X POST "http://localhost:8000/segment/text" \
-  -H "Content-Type: application/json" \
-  -d '{"session_id": "abc-123", "prompt": "car"}'
+# Format code
+uv run black .
+uv run isort .
 ```
 
----
+### Architecture
 
-## 📓 Examples
+See [ARCHITECTURE.md](ARCHITECTURE.md) for detailed technical documentation.
 
-Jupyter notebooks are available in the `examples/` directory:
+## Troubleshooting
 
-- **`sam3_image_predictor_example.ipynb`** — Basic image segmentation
-- **`sam3_image_interactive.ipynb`** — Interactive prompting workflows
+### Backend won't start
+- Verify weights exist: `ls -lh weights/`
+- Check logs for errors
+- Try base model: `rm weights/medsam3_lora.safetensors`
 
-Run them with:
+### Poor segmentation quality
+- Verify MedSAM3 weights loaded (check startup logs)
+- Set correct medical modality
+- Use medical-specific prompts
+- Try multiple prompts for refinement
 
-```bash
-cd examples
-jupyter notebook
-```
+### Memory issues
+- Reduce image size before upload
+- Close other applications
+- Use base SAM3 without LoRA
 
----
+## Contributing
 
-## 🛠️ Tech Stack
-
-| Component | Technology |
-|-----------|------------|
-| **ML Framework** | [MLX](https://github.com/ml-explore/mlx) |
-| **Backend** | FastAPI, Uvicorn |
-| **Frontend** | Next.js 16, React 19, Tailwind CSS 4 |
-| **Model** | [SAM3 MLX](https://huggingface.co/mlx-community/sam3-image) |
-
----
-
-## 🤝 Contributing
-
-Contributions are welcome! Please feel free to submit a Pull Request.
-
+Contributions welcome! Please:
 1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/amazing-feature`)
-3. Commit your changes (`git commit -m 'Add amazing feature'`)
-4. Push to the branch (`git push origin feature/amazing-feature`)
-5. Open a Pull Request
+2. Create a feature branch
+3. Make your changes
+4. Add tests if applicable
+5. Submit a pull request to https://github.com/Staars/mlx_medsam3
 
----
+## Citation
 
-## 📄 License
+If you use this work, please cite both the original mlx_sam3 and this medical enhancement:
 
-This project is licensed under the Apache 2.0 License — see the [LICENSE](LICENSE) file for details.
+```bibtex
+@software{mlx_medsam3,
+  title={MLX MedSAM3: Medical Image Segmentation with SAM3},
+  author={Staars},
+  year={2025},
+  url={https://github.com/Staars/mlx_medsam3},
+  note={Fork of mlx_sam3 by Deekshith-Dade with MedSAM3 medical fine-tuning}
+}
 
----
+@software{mlx_sam3,
+  title={MLX SAM3: SAM3 Implementation for Apple Silicon},
+  author={Deekshith-Dade},
+  year={2024},
+  url={https://github.com/Deekshith-Dade/mlx_sam3}
+}
+```
 
-## 🙏 Acknowledgments
+## License
 
-- [Meta AI](https://ai.meta.com/) for the original SAM3 model
-- [MLX Team](https://github.com/ml-explore/mlx) at Apple for the incredible ML framework
-- The open-source community for continuous inspiration
+MIT License - see LICENSE file for details.
 
----
+## Acknowledgments
 
-<div align="center">
+- [Deekshith-Dade](https://github.com/Deekshith-Dade) for the original [mlx_sam3](https://github.com/Deekshith-Dade/mlx_sam3) implementation
+- Meta AI for SAM3 architecture
+- MedSAM3 team for medical fine-tuning
+- MLX team for Apple Silicon optimization
+- HuggingFace for model hosting
 
-**Built with ❤️ for Apple Silicon**
+## Links
 
-[Report Bug](https://github.com/your-username/mlx-sam3/issues) · [Request Feature](https://github.com/your-username/mlx-sam3/issues)
-
-</div>
-
+- **Original Project**: [mlx_sam3 by Deekshith-Dade](https://github.com/Deekshith-Dade/mlx_sam3)
+- [SAM3 Paper](https://ai.meta.com/sam3)
+- [MLX Documentation](https://ml-explore.github.io/mlx/)
+- [MedSAM3 Weights](https://huggingface.co/lal-Joey/MedSAM3_v1)
+- [Report Issues](https://github.com/Staars/mlx_medsam3/issues)

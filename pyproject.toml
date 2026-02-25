@@ -1,10 +1,11 @@
 [project]
-name = "mlx-sam3"
+name = "mlx-medsam3"
 version = "0.1.0"
-description = "Add your description here"
+description = "Medical image segmentation with SAM3 and MedSAM3 fine-tuned weights, optimized for Apple Silicon with MLX"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "fastapi>=0.115.0",
     "ftfy>=6.3.1",
     "huggingface-hub>=1.1.6",
     "iopath>=0.1.10",
@@ -15,12 +16,15 @@ dependencies = [
     "mlx>=0.30.0",
     "numpy>=2.3.5",
     "pillow>=12.0.0",
+    "python-multipart>=0.0.9",
     "regex>=2025.11.3",
     "requests>=2.32.5",
     "scikit-image>=0.25.2",
     "scikit-learn>=1.8.0",
     "torch>=2.9.1",
     "torchvision>=0.24.1",
+    "huggingface_hub>=0.24.1",
+    "uvicorn>=0.32.0",
 ]
 
 [build-system]

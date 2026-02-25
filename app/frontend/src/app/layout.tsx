@@ -2,8 +2,8 @@ import type { Metadata } from "next";
 import "./globals.css";
 
 export const metadata: Metadata = {
-  title: "SAM3 Segmentation Studio",
-  description: "Interactive image segmentation with SAM3 model",
+  title: "MedSAM3 Studio - Medical Image Segmentation",
+  description: "Medical image segmentation with MedSAM3 - LoRA fine-tuning for 10+ modalities",
 };
 
 export default function RootLayout({

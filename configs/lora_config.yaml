@@ -1,0 +1,100 @@
+# MLX SAM3 LoRA Configuration
+# Medical imaging fine-tuning configuration
+
+model:
+  name: "facebook/sam3"
+  resolution: 1008
+  confidence_threshold: 0.5
+
+# LoRA settings
+lora:
+  enabled: true
+  rank: 8                    # LoRA rank (4-32, higher = more capacity)
+  alpha: 16.0                # Scaling factor (typically 2x rank)
+  dropout: 0.0               # Dropout for LoRA layers
+  
+  # Target modules - which layers to apply LoRA to
+  target_modules:
+    - "q_proj"               # Query projection
+    - "k_proj"               # Key projection  
+    - "v_proj"               # Value projection
+    - "out_proj"             # Output projection
+    - "qkv"                  # Fused QKV (vision backbone)
+    - "proj"                 # Vision backbone projection
+    - "fc1"                  # MLP first layer
+    - "fc2"                  # MLP second layer
+    - "linear1"              # Transformer FFN first layer
+    - "linear2"              # Transformer FFN second layer
+  
+  # Component-level control
+  apply_to_vision_encoder: true      # ViT backbone (32 layers)
+  apply_to_text_encoder: true        # Text encoder (24 layers)
+  apply_to_geometry_encoder: false   # Geometry encoder (3 layers)
+  apply_to_detr_encoder: true        # DETR encoder (6 layers)
+  apply_to_detr_decoder: true        # DETR decoder (6 layers)
+  apply_to_mask_decoder: false       # Mask decoder (3 stages)
+
+# Medical imaging presets
+medical:
+  modality: "general"        # Options: general, ct, mri, xray, ultrasound, microscopy, endoscopy
+  
+  # Modality-specific thresholds
+  thresholds:
+    general: 0.5
+    ct: 0.6
+    mri: 0.6
+    xray: 0.55
+    ultrasound: 0.45
+    microscopy: 0.7
+    endoscopy: 0.5
+  
+  # Medical concept vocabulary (examples)
+  concepts:
+    - "tumor"
+    - "lesion"
+    - "organ"
+    - "vessel"
+    - "bone"
+    - "tissue"
+    - "cell"
+    - "nodule"
+
+# Training settings (for future implementation)
+training:
+  batch_size: 4
+  learning_rate: 5e-5
+  num_epochs: 100
+  warmup_steps: 200
+  gradient_accumulation_steps: 8
+  mixed_precision: true
+  
+  # Optimizer
+  optimizer: "adamw"
+  weight_decay: 0.01
+  adam_beta1: 0.9
+  adam_beta2: 0.999
+  max_grad_norm: 1.0
+  
+  # Scheduler
+  lr_scheduler: "cosine"
+  
+  # Checkpointing
+  save_steps: 100
+  eval_steps: 100
+  save_total_limit: 5
+  
+  # Logging
+  logging_steps: 10
+  log_dir: "logs"
+
+# Output settings
+output:
+  output_dir: "outputs/mlx_sam3_lora"
+  save_lora_only: true       # Save only LoRA weights (lightweight)
+  checkpoint_format: "safetensors"
+
+# Evaluation
+evaluation:
+  metric: "iou"              # Intersection over Union
+  compute_during_training: true
+  save_predictions: false
