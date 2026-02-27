@@ -84,7 +84,6 @@ class Sam3Processor:
 
         state["original_height"] = height
         state["original_width"] = width
-        import time
         start = time.perf_counter()
         state["backbone_out"] = self.model.backbone.call_image(image)
         mx.eval(state)
