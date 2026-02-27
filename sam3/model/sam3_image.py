@@ -316,11 +316,11 @@ class Sam3Image(nn.Module):
             ), -10.0, 10.0)
         
         _update_out(
-            out, "pred_logits", outputs_class[:, :, :num_o2o], update_aux=self.train
+            out, "pred_logits", outputs_class[:, :, :num_o2o], update_aux=self.training
         )
 
         _update_out(
-            out, "pred_boxes", outputs_coord[:, :, :num_o2o], update_aux=self.train
+            out, "pred_boxes", outputs_coord[:, :, :num_o2o], update_aux=self.training
         )
         _update_out(
             out,

@@ -276,7 +276,7 @@ class UniversalSegmentationHead(SegmentationHead):
             pooled_enc = encoder_hidden_states.mean(0)
             presence_logit = (
                 self.presence_head(
-                    pooled_enc.view(1, bs, 1, self.d_model),
+                    pooled_enc.reshape(1, bs, 1, self.d_model),
                     prompt=prompt,
                     prompt_mask=prompt_mask,
                 )

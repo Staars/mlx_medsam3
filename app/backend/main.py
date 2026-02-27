@@ -1,6 +1,7 @@
 """
 FastAPI backend for SAM3 segmentation model.
 Provides endpoints for image upload, text prompts, box prompts, and segmentation results.
+Supports both normal images and DICOM volumes.
 """
 
 import io
@@ -9,6 +10,7 @@ import sys
 import time
 import uuid
 from contextlib import asynccontextmanager
+from typing import List
 
 import mlx.core as mx
 import numpy as np
@@ -16,6 +18,16 @@ from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from PIL import Image
 from pydantic import BaseModel
+import pydicom
+
+# Import DICOM utilities
+from dicom_utils import (
+    is_dicom_file,
+    load_dicom_volume,
+    mlx_slice_to_pil,
+    get_default_window_for_modality,
+    get_dicom_metadata
+)
 
 # Add parent directory to path to import sam3
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -191,6 +203,16 @@ class ModalityRequest(BaseModel):
     modality: str  # ct, mri, xray, ultrasound, microscopy, etc.
 
 
+class SliceRequest(BaseModel):
+    session_id: str
+    slice_index: int
+
+
+class PropagateRequest(BaseModel):
+    session_id: str
+    direction: str = "both"  # "forward", "backward", or "both"
+
+
 def mask_to_rle(mask: np.ndarray) -> dict:
     """
     Encode a binary mask to RLE (Run-Length Encoding) format.
@@ -334,41 +356,206 @@ async def set_modality(request: ModalityRequest):
 
 
 @app.post("/upload")
-async def upload_image(file: UploadFile = File(...)):
-    """Upload an image and initialize a session."""
+async def upload_image(files: List[UploadFile] = File(...)):
+    """Upload an image, DICOM file, or multiple DICOM files and initialize a session."""
     if processor is None:
         raise HTTPException(status_code=503, detail="Model not loaded yet")
     
     try:
-        # Read and validate image
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents)).convert("RGB")
+        # First, try to identify valid DICOM image files
+        dicom_image_files = []
+        regular_image_files = []
+        
+        for file in files:
+            contents = await file.read()
+            print(f"Processing: {file.filename}, size: {len(contents)}, content_type: {file.content_type}")
+            
+            # Check regular image files FIRST
+            if file.content_type and file.content_type.startswith("image/"):
+                # Regular image file
+                regular_image_files.append((file, contents))
+                print(f"  → Added as regular image (content-type)")
+            
+            elif file.filename.lower().endswith(('.png', '.jpg', '.jpeg', '.gif', '.bmp', '.tiff', '.webp')):
+                # Has image extension
+                regular_image_files.append((file, contents))
+                print(f"  → Added as regular image (extension)")
+            
+            # Then check for DICOM
+            elif is_dicom_file(contents):
+                # Has DICM magic bytes - definitely DICOM
+                print(f"  → Has DICM magic bytes")
+                try:
+                    dcm = pydicom.dcmread(io.BytesIO(contents), force=True)
+                    if 'PixelData' in dcm or (0x7fe0, 0x0010) in dcm:
+                        dicom_image_files.append((file, contents, dcm))
+                        print(f"  → Added as DICOM image")
+                    else:
+                        print(f"  → Skipping: no pixel data")
+                except Exception as e:
+                    print(f"  → Skipping: {e}")
+            
+            else:
+                # No standard image extension or magic bytes - might be DICOM without header
+                print(f"  → Trying as DICOM without magic bytes")
+                try:
+                    dcm = pydicom.dcmread(io.BytesIO(contents), force=True)
+                    if 'PixelData' in dcm or (0x7fe0, 0x0010) in dcm:
+                        dicom_image_files.append((file, contents, dcm))
+                        print(f"  → Added as DICOM image (no magic bytes)")
+                    else:
+                        print(f"  → Skipping: no pixel data")
+                except Exception as e:
+                    print(f"  → Skipping: {e}")
+        
+        print(f"Found {len(dicom_image_files)} DICOM images, {len(regular_image_files)} regular images")
+        
+        # Decide what to process based on what we found
+        if len(dicom_image_files) > 0:
+            # Process as DICOM volume
+            if len(dicom_image_files) == 1:
+                # Single DICOM file
+                file, contents, dcm = dicom_image_files[0]
+                print(f"Processing single DICOM file: {file.filename}")
+                
+                volume_mlx, dicom_metadata = load_dicom_volume(io.BytesIO(contents))
+                
+                # Ensure volume is at least 3D (single 2D slices get expanded)
+                if volume_mlx.ndim == 2:
+                    volume_mlx = mx.expand_dims(volume_mlx, 0)
+                
+                # Get first slice as PIL for SAM3
+                first_slice_mlx = volume_mlx[0]
+                total_slices = volume_mlx.shape[0]
+                
+                # Get default windowing for modality
+                modality = dicom_metadata.get('modality', 'CT')
+                window_center = dicom_metadata.get('window_center')
+                window_width = dicom_metadata.get('window_width')
+                
+                if window_center is None or window_width is None:
+                    window_center, window_width = get_default_window_for_modality(modality)
+                
+                # Convert to PIL
+                image = mlx_slice_to_pil(
+                    first_slice_mlx,
+                    window_center=window_center,
+                    window_width=window_width,
+                    rescale_intercept=dicom_metadata.get('rescale_intercept', 0),
+                    rescale_slope=dicom_metadata.get('rescale_slope', 1),
+                    modality=modality
+                )
+                
+                is_dicom = True
+            
+            else:
+                # Multiple DICOM files - create volume
+                print(f"Processing {len(dicom_image_files)} DICOM files as volume")
+                
+                # Sort by InstanceNumber or SliceLocation
+                dicom_datasets = [dcm for _, _, dcm in dicom_image_files]
+                dicom_datasets.sort(key=lambda x: (
+                    getattr(x, 'InstanceNumber', 0),
+                    getattr(x, 'SliceLocation', 0)
+                ))
+                
+                # Extract pixel arrays and convert to MLX
+                mlx_slices = []
+                for dcm in dicom_datasets:
+                    pixel_array = dcm.pixel_array
+                    mlx_slices.append(mx.array(pixel_array))
+                
+                # Stack slices
+                volume_mlx = mx.stack(mlx_slices, axis=0)
+                total_slices = len(mlx_slices)
+                
+                # Get metadata from first slice
+                dicom_metadata = get_dicom_metadata(dicom_datasets[0])
+                
+                # Get first slice as PIL for SAM3
+                first_slice_mlx = volume_mlx[0]
+                
+                # Get default windowing for modality
+                modality = dicom_metadata.get('modality', 'CT')
+                window_center = dicom_metadata.get('window_center')
+                window_width = dicom_metadata.get('window_width')
+                
+                if window_center is None or window_width is None:
+                    window_center, window_width = get_default_window_for_modality(modality)
+                
+                # Convert to PIL
+                image = mlx_slice_to_pil(
+                    first_slice_mlx,
+                    window_center=window_center,
+                    window_width=window_width,
+                    rescale_intercept=dicom_metadata.get('rescale_intercept', 0),
+                    rescale_slope=dicom_metadata.get('rescale_slope', 1),
+                    modality=modality
+                )
+                
+                is_dicom = True
+        
+        elif len(regular_image_files) == 1:
+            # Single regular image
+            file, contents = regular_image_files[0]
+            print(f"Processing single image file: {file.filename}")
+            
+            image = Image.open(io.BytesIO(contents)).convert("RGB")
+            
+            # Convert to MLX and store as single-slice volume for consistency
+            img_array = mx.array(np.array(image))
+            volume_mlx = mx.expand_dims(img_array, 0)  # Add slice dimension
+            
+            total_slices = 1
+            dicom_metadata = {}
+            is_dicom = False
+        
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=f"No valid image files found. Uploaded {len(files)} files but none contained valid image data."
+            )
         
         # Create session
         session_id = str(uuid.uuid4())
         
-        # Process image through model (timed)
+        # Process first slice through model (timed)
         start_time = time.perf_counter()
         state = processor.set_image(image)
         processing_time_ms = (time.perf_counter() - start_time) * 1000
         
-        # Store session with image info
+        # Store session with volume data
         sessions[session_id] = {
             "state": state,
             "image_size": image.size,
+            "volume_mlx": volume_mlx,
+            "current_slice": 0,
+            "total_slices": total_slices,
+            "is_dicom": is_dicom,
+            "dicom_metadata": dicom_metadata,
+            "encoded_slice": 0,  # Track which slice is currently encoded
         }
         
         return {
             "session_id": session_id,
             "width": image.size[0],
             "height": image.size[1],
-            "message": "Image uploaded and processed successfully",
+            "total_slices": total_slices,
+            "current_slice": 0,
+            "is_volume": total_slices > 1,
+            "is_dicom": is_dicom,
+            "modality": dicom_metadata.get('modality', 'unknown') if is_dicom else 'image',
+            "message": f"{'DICOM volume' if is_dicom else 'Image'} uploaded and processed successfully",
             "processing_time_ms": round(processing_time_ms, 2),
             "peak_memory_mb": round(mx.get_peak_memory() / (1024 * 1024), 2)
         }
     
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Error processing image: {str(e)}")
+        import traceback
+        error_detail = f"Error processing file: {str(e)}"
+        print(f"Upload error: {error_detail}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=400, detail=error_detail)
 
 
 @app.post("/segment/text")
@@ -382,14 +569,50 @@ async def segment_with_text(request: TextPromptRequest):
         raise HTTPException(status_code=404, detail="Session not found")
     
     try:
+        current_slice = session.get("current_slice", 0)
+        encoded_slice = session.get("encoded_slice", -1)
+        
         start_time = time.perf_counter()
-        state = processor.set_text_prompt(request.prompt, session["state"])
+        
+        # Only encode if we haven't encoded this slice yet
+        if encoded_slice != current_slice:
+            # Get current slice
+            volume_mlx = session["volume_mlx"]
+            
+            if volume_mlx.ndim == 3:
+                slice_mlx = volume_mlx[current_slice]
+            else:
+                slice_mlx = volume_mlx
+            
+            # Get DICOM metadata
+            dicom_metadata = session.get("dicom_metadata", {})
+            
+            # Convert to PIL
+            image = mlx_slice_to_pil(
+                slice_mlx,
+                window_center=dicom_metadata.get('window_center'),
+                window_width=dicom_metadata.get('window_width'),
+                rescale_intercept=dicom_metadata.get('rescale_intercept', 0),
+                rescale_slope=dicom_metadata.get('rescale_slope', 1),
+                modality=dicom_metadata.get('modality', 'CT')
+            )
+            
+            # Encode image through backbone
+            state = processor.set_image(image)
+            session["state"] = state
+            session["image_size"] = image.size
+            session["encoded_slice"] = current_slice
+        else:
+            # Use cached encoded state
+            state = session["state"]
+        
+        # Apply text prompt to encoded state
+        state = processor.set_text_prompt(request.prompt, state)
         processing_time_ms = (time.perf_counter() - start_time) * 1000
+        
         session["state"] = state
-        start = time.perf_counter()
+        
         results = serialize_state(state)
-        end = time.perf_counter()
-        print(f"Serialization took {end - start:.4f} seconds")
         
         return {
             "session_id": request.session_id,
@@ -400,6 +623,9 @@ async def segment_with_text(request: TextPromptRequest):
         }
     
     except Exception as e:
+        import traceback
+        print(f"Error in text prompt: {e}")
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error during segmentation: {str(e)}")
 
 
@@ -414,13 +640,47 @@ async def add_box_prompt(request: BoxPromptRequest):
         raise HTTPException(status_code=404, detail="Session not found")
     
     try:
-        state = session["state"]
+        current_slice = session.get("current_slice", 0)
+        encoded_slice = session.get("encoded_slice", -1)
+        
+        start_time = time.perf_counter()
+        
+        # Only encode if we haven't encoded this slice yet
+        if encoded_slice != current_slice:
+            # Get current slice
+            volume_mlx = session["volume_mlx"]
+            
+            if volume_mlx.ndim == 3:
+                slice_mlx = volume_mlx[current_slice]
+            else:
+                slice_mlx = volume_mlx
+            
+            # Get DICOM metadata
+            dicom_metadata = session.get("dicom_metadata", {})
+            
+            # Convert to PIL
+            image = mlx_slice_to_pil(
+                slice_mlx,
+                window_center=dicom_metadata.get('window_center'),
+                window_width=dicom_metadata.get('window_width'),
+                rescale_intercept=dicom_metadata.get('rescale_intercept', 0),
+                rescale_slope=dicom_metadata.get('rescale_slope', 1),
+                modality=dicom_metadata.get('modality', 'CT')
+            )
+            
+            # Encode image through backbone
+            state = processor.set_image(image)
+            session["state"] = state
+            session["image_size"] = image.size
+            session["encoded_slice"] = current_slice
+        else:
+            # Use cached encoded state
+            state = session["state"]
         
         # Store prompted box for display
         if "prompted_boxes" not in state:
             state["prompted_boxes"] = []
         
-        # Convert from normalized cxcywh to pixel xyxy for display
         img_w = state["original_width"]
         img_h = state["original_height"]
         cx, cy, w, h = request.box
@@ -434,9 +694,10 @@ async def add_box_prompt(request: BoxPromptRequest):
             "label": request.label
         })
         
-        start_time = time.perf_counter()
+        # Apply the geometric prompt to encoded state
         state = processor.add_geometric_prompt(request.box, request.label, state)
         processing_time_ms = (time.perf_counter() - start_time) * 1000
+        
         session["state"] = state
         
         return {
@@ -448,6 +709,9 @@ async def add_box_prompt(request: BoxPromptRequest):
         }
     
     except Exception as e:
+        import traceback
+        print(f"Error in box prompt: {e}")
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error adding box prompt: {str(e)}")
 
 
@@ -462,13 +726,47 @@ async def add_point_prompt(request: PointPromptRequest):
         raise HTTPException(status_code=404, detail="Session not found")
     
     try:
-        state = session["state"]
+        current_slice = session.get("current_slice", 0)
+        encoded_slice = session.get("encoded_slice", -1)
+        
+        start_time = time.perf_counter()
+        
+        # Only encode if we haven't encoded this slice yet
+        if encoded_slice != current_slice:
+            # Get current slice
+            volume_mlx = session["volume_mlx"]
+            
+            if volume_mlx.ndim == 3:
+                slice_mlx = volume_mlx[current_slice]
+            else:
+                slice_mlx = volume_mlx
+            
+            # Get DICOM metadata
+            dicom_metadata = session.get("dicom_metadata", {})
+            
+            # Convert to PIL
+            image = mlx_slice_to_pil(
+                slice_mlx,
+                window_center=dicom_metadata.get('window_center'),
+                window_width=dicom_metadata.get('window_width'),
+                rescale_intercept=dicom_metadata.get('rescale_intercept', 0),
+                rescale_slope=dicom_metadata.get('rescale_slope', 1),
+                modality=dicom_metadata.get('modality', 'CT')
+            )
+            
+            # Encode image through backbone
+            state = processor.set_image(image)
+            session["state"] = state
+            session["image_size"] = image.size
+            session["encoded_slice"] = current_slice
+        else:
+            # Use cached encoded state
+            state = session["state"]
         
         # Store prompted point for display
         if "prompted_points" not in state:
             state["prompted_points"] = []
         
-        # Convert from normalized to pixel coordinates for display
         img_w = state["original_width"]
         img_h = state["original_height"]
         x, y = request.point
@@ -480,9 +778,10 @@ async def add_point_prompt(request: PointPromptRequest):
             "label": request.label
         })
         
-        start_time = time.perf_counter()
+        # Apply the point prompt to encoded state
         state = processor.add_point_prompt(request.point, request.label, state)
         processing_time_ms = (time.perf_counter() - start_time) * 1000
+        
         session["state"] = state
         
         return {
@@ -494,7 +793,217 @@ async def add_point_prompt(request: PointPromptRequest):
         }
     
     except Exception as e:
+        import traceback
+        print(f"Error in point prompt: {e}")
+        print(traceback.format_exc())
         raise HTTPException(status_code=500, detail=f"Error adding point prompt: {str(e)}")
+
+
+@app.post("/slice")
+async def change_slice(request: SliceRequest):
+    """Change to a different slice in the volume (fast - no SAM3 processing)."""
+    if processor is None:
+        raise HTTPException(status_code=503, detail="Model not loaded yet")
+    
+    session = sessions.get(request.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Validate slice index
+    total_slices = session.get("total_slices", 1)
+    if request.slice_index < 0 or request.slice_index >= total_slices:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Invalid slice index: {request.slice_index} (valid range: 0-{total_slices-1})"
+        )
+    
+    try:
+        # Just update the current slice index - don't process through SAM3 yet
+        session["current_slice"] = request.slice_index
+        
+        # Get slice dimensions for response
+        volume_mlx = session["volume_mlx"]
+        if volume_mlx.ndim == 3:
+            slice_mlx = volume_mlx[request.slice_index]
+        else:
+            slice_mlx = volume_mlx
+        
+        # Get dimensions (evaluate to get actual shape)
+        mx.eval(slice_mlx)
+        height, width = slice_mlx.shape[:2]
+        
+        # Clear segmentation results when changing slices
+        # Mark encoded_slice as stale to force re-encoding on next prompt
+        session["encoded_slice"] = -1
+        session["state"] = {
+            "original_width": width,
+            "original_height": height,
+        }
+        
+        return {
+            "session_id": request.session_id,
+            "slice_index": request.slice_index,
+            "total_slices": total_slices,
+            "width": width,
+            "height": height,
+            "results": {
+                "original_width": width,
+                "original_height": height,
+            },
+            "message": "Slice changed (segmentation will run on next prompt)",
+            "processing_time_ms": 0,  # Instant!
+        }
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error changing slice: {str(e)}")
+
+
+@app.get("/volume-info/{session_id}")
+async def get_volume_info(session_id: str):
+    """Get volume metadata (total slices, current slice, etc.)"""
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    return {
+        "session_id": session_id,
+        "total_slices": session.get("total_slices", 1),
+        "current_slice": session.get("current_slice", 0),
+        "is_dicom": session.get("is_dicom", False),
+        "is_volume": session.get("total_slices", 1) > 1,
+        "modality": session.get("dicom_metadata", {}).get("modality", "unknown"),
+        "image_size": session.get("image_size", (0, 0)),
+    }
+
+
+@app.get("/slice-image/{session_id}")
+async def get_slice_image(session_id: str, slice_index: int = None):
+    """Get the current slice as a PNG image for display."""
+    from fastapi.responses import StreamingResponse
+    
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    try:
+        # Use current slice if not specified
+        if slice_index is None:
+            slice_index = session.get("current_slice", 0)
+        
+        # Get slice from MLX volume
+        volume_mlx = session["volume_mlx"]
+        if volume_mlx.ndim == 3:
+            slice_mlx = volume_mlx[slice_index]
+        else:
+            slice_mlx = volume_mlx
+        
+        # Get DICOM metadata if available
+        dicom_metadata = session.get("dicom_metadata", {})
+        window_center = dicom_metadata.get('window_center')
+        window_width = dicom_metadata.get('window_width')
+        
+        # Convert to PIL
+        image = mlx_slice_to_pil(
+            slice_mlx,
+            window_center=window_center,
+            window_width=window_width,
+            rescale_intercept=dicom_metadata.get('rescale_intercept', 0),
+            rescale_slope=dicom_metadata.get('rescale_slope', 1),
+            modality=dicom_metadata.get('modality', 'CT')
+        )
+        
+        # Convert to PNG bytes
+        img_byte_arr = io.BytesIO()
+        image.save(img_byte_arr, format='PNG')
+        img_byte_arr.seek(0)
+        
+        return StreamingResponse(img_byte_arr, media_type="image/png")
+    
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Error getting slice image: {str(e)}")
+
+
+@app.post("/propagate")
+async def propagate_masks(request: PropagateRequest):
+    """Propagate current slice segmentation to adjacent slices in the volume."""
+    if processor is None:
+        raise HTTPException(status_code=503, detail="Model not loaded yet")
+    
+    session = sessions.get(request.session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    total_slices = session.get("total_slices", 1)
+    if total_slices <= 1:
+        raise HTTPException(status_code=400, detail="Propagation requires a volume with multiple slices")
+    
+    state = session.get("state", {})
+    if "masks" not in state:
+        raise HTTPException(status_code=400, detail="No segmentation masks to propagate. Segment a slice first.")
+    
+    try:
+        start_time = time.perf_counter()
+        
+        current_slice = session.get("current_slice", 0)
+        volume_mlx = session["volume_mlx"]
+        
+        print(f"Propagating from slice {current_slice}, direction={request.direction}")
+        
+        volume_states = processor.propagate_to_volume(
+            volume_mlx=volume_mlx,
+            source_slice=current_slice,
+            source_state=state,
+            direction=request.direction,
+        )
+        
+        # Store volume masks in session
+        # Convert each state's masks to serializable format
+        volume_masks = {}
+        for slice_idx, slice_state in volume_states.items():
+            volume_masks[slice_idx] = serialize_state(slice_state)
+        
+        session["volume_masks"] = volume_masks
+        
+        processing_time_ms = (time.perf_counter() - start_time) * 1000
+        
+        propagated_slices = sorted(volume_states.keys())
+        
+        return {
+            "session_id": request.session_id,
+            "source_slice": current_slice,
+            "propagated_slices": propagated_slices,
+            "total_propagated": len(propagated_slices),
+            "direction": request.direction,
+            "processing_time_ms": round(processing_time_ms, 2),
+            "peak_memory_mb": round(mx.get_peak_memory() / (1024 * 1024), 2),
+        }
+    
+    except Exception as e:
+        import traceback
+        print(f"Error in propagation: {e}")
+        print(traceback.format_exc())
+        raise HTTPException(status_code=500, detail=f"Error during propagation: {str(e)}")
+
+
+@app.get("/volume-masks/{session_id}/{slice_index}")
+async def get_volume_mask(session_id: str, slice_index: int):
+    """Get the propagated mask for a specific slice."""
+    session = sessions.get(session_id)
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    volume_masks = session.get("volume_masks", {})
+    
+    # Try int key (from propagation) 
+    mask_data = volume_masks.get(slice_index)
+    if mask_data is None:
+        raise HTTPException(status_code=404, detail=f"No mask for slice {slice_index}")
+    
+    return {
+        "session_id": session_id,
+        "slice_index": slice_index,
+        "results": mask_data,
+    }
 
 
 @app.post("/reset")
@@ -508,23 +1017,24 @@ async def reset_prompts(request: SessionRequest):
         raise HTTPException(status_code=404, detail="Session not found")
     
     try:
-        state = session["state"]
-        
-        start_time = time.perf_counter()
-        processor.reset_all_prompts(state)
-        processing_time_ms = (time.perf_counter() - start_time) * 1000
-        
-        if "prompted_boxes" in state:
-            del state["prompted_boxes"]
-        
-        if "prompted_points" in state:
-            del state["prompted_points"]
+        # Clear prompts but keep cached backbone features for the current slice
+        state = session.get("state", {})
+        if "backbone_out" in state:
+            processor.reset_all_prompts(state)
+            # Also clear backend-specific prompt display data
+            state.pop("prompted_boxes", None)
+            state.pop("prompted_points", None)
+        else:
+            session["state"] = {}
         
         return {
             "session_id": request.session_id,
             "message": "All prompts reset",
-            "results": serialize_state(state),
-            "processing_time_ms": round(processing_time_ms, 2),
+            "results": {
+                "original_width": state.get("original_width", 0),
+                "original_height": state.get("original_height", 0),
+            },
+            "processing_time_ms": 0,
             "peak_memory_mb": round(mx.get_peak_memory() / (1024 * 1024), 2)
         }
     

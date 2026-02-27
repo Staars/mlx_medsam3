@@ -162,14 +162,14 @@ def get_abs_pos(
             assert has_cls_token
             return mx.concat(
                 [cls_pos, new_abs_pos.transpose(0, 2, 3, 1).reshape(1, h * w, -1)],
-                dim=1
+                axis=1
             )
     else:
         if not retain_cls_token:
             return abs_pos.reshape(1, h, w, -1)
         else:
             assert has_cls_token
-            return mx.concat([cls_pos, abs_pos], dim=1)
+            return mx.concat([cls_pos, abs_pos], axis=1)
     
     
     
@@ -574,7 +574,7 @@ class ViT(nn.Module):
 
         s = 0
         if self.retain_cls_token:
-            x = mx.concat([self.class_embedding, x.flatten(1, 2)], dim=1)
+            x = mx.concat([self.class_embedding, x.flatten(1, 2)], axis=1)
             s = 1
         
         if self.pos_embed is not None:
@@ -607,7 +607,7 @@ class ViT(nn.Module):
                     feats = feats.transpose(0, 3, 1, 2)
                 else:
                     assert feats.ndim == 3
-                    h = w = math.sqrt(feats.shape[1])
+                    h = w = int(math.sqrt(feats.shape[1]))
                     feats = feats.reshape(
                         feats.shape[0], h, w, feats.shape[-1]
                     ).transpose(0, 3, 1, 2)

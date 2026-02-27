@@ -366,7 +366,7 @@ class MaskEncoder(nn.Module):
 
     def __call__(self, masks, *args, **kwargs) -> Tuple[mx.array, mx.array]:
         masks = self.mask_downsampler(masks)
-        masks_pos = self.position_encoding(masks).to(masks.dtype)
+        masks_pos = self.position_encoding(masks).astype(masks.dtype)
 
         return masks, masks_pos
 
@@ -590,7 +590,7 @@ class SequenceGeometryEncoder(nn.Module):
             ]
         ), f"Expected attn_mask to be of shape {bs}x{n_masks}. Got {list(attn_mask.shape)}."
         masks, pos = self.mask_encoder(
-            masks=masks.flatten(0, 1).float(),
+            masks=masks.flatten(0, 1).astype(mx.float32),
             pix_feat=img_feats,
         )
         H, W = masks.shape[-2:]
@@ -602,7 +602,7 @@ class SequenceGeometryEncoder(nn.Module):
             -2
         )  # n_masks x bs x C x H*W
         masks = masks.transpose(0, 3, 1, 2).flatten(0, 1)  # n_masks * H*W x bs x C
-        attn_mask = attn_mask.repeat(n_tokens_per_mask, dim=1)
+        attn_mask = mx.repeat(attn_mask, repeats=n_tokens_per_mask, axis=1)
         if self.add_mask_label:
             masks = masks + self.mask_label_embed(mask_labels.astype(mx.int64))
         return masks, attn_mask

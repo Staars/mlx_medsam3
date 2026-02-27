@@ -18,6 +18,9 @@ import {
   MousePointerClick,
   Stethoscope,
   Lightbulb,
+  Layers,
+  ChevronLeft,
+  ChevronRight,
 } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -32,6 +35,9 @@ import {
   checkHealth,
   getModalities,
   setModality,
+  changeSlice,
+  propagateMasks,
+  getVolumeMask,
   type SegmentationResult,
   type ModalityConfig,
 } from "@/lib/api";
@@ -72,6 +78,13 @@ export default function Home() {
     "checking" | "online" | "offline"
   >("checking");
   const fileInputRef = useRef<HTMLInputElement>(null);
+
+  // Volume/DICOM state
+  const [totalSlices, setTotalSlices] = useState(1);
+  const [currentSlice, setCurrentSlice] = useState(0);
+  const [isVolume, setIsVolume] = useState(false);
+  const [isDicom, setIsDicom] = useState(false);
+  const [propagatedSlices, setPropagatedSlices] = useState<number[]>([]);
 
   // Medical imaging state
   const [modalities, setModalities] = useState<string[]>([]);
@@ -127,30 +140,57 @@ export default function Home() {
   }, []);
 
   const handleFileSelect = useCallback(
-    async (file: File) => {
-      if (!file.type.startsWith("image/")) {
-        setError("Please select an image file");
-        return;
-      }
-
+    async (files: FileList) => {
       setError(null);
       setIsLoading(true);
 
       try {
-        // Create preview URL
-        const url = URL.createObjectURL(file);
-        setImageUrl(url);
-
-        // Upload to backend
-        const response = await uploadImage(file);
-        setSessionId(response.session_id);
-        setImageWidth(response.width);
-        setImageHeight(response.height);
+        // Upload to backend (supports multiple files)
+        const formData = new FormData();
+        for (let i = 0; i < files.length; i++) {
+          formData.append('files', files[i]);
+        }
+        
+        const response = await fetch(
+          `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/upload`,
+          {
+            method: "POST",
+            body: formData,
+          }
+        );
+        
+        if (!response.ok) {
+          const error = await response.json();
+          throw new Error(error.detail || "Upload failed");
+        }
+        
+        const data = await response.json();
+        
+        setSessionId(data.session_id);
+        setImageWidth(data.width);
+        setImageHeight(data.height);
+        setTotalSlices(data.total_slices);
+        setCurrentSlice(data.current_slice);
+        setIsVolume(data.is_volume);
+        setIsDicom(data.is_dicom);
         setResult(null);
         setTextPrompt("");
-        addTiming("Image Encoding", response.processing_time_ms);
+        setPropagatedSlices([]);
+        
+        // Set image URL based on type
+        if (data.is_dicom) {
+          // For DICOM, use backend endpoint to get rendered image
+          const imageUrl = `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/slice-image/${data.session_id}?slice_index=${data.current_slice}`;
+          setImageUrl(imageUrl);
+        } else {
+          // For regular images, create object URL
+          const url = URL.createObjectURL(files[0]);
+          setImageUrl(url);
+        }
+        
+        addTiming("Image Encoding", data.processing_time_ms);
       } catch (err) {
-        setError(err instanceof Error ? err.message : "Failed to upload image");
+        setError(err instanceof Error ? err.message : "Failed to upload file");
         setImageUrl(null);
       } finally {
         setIsLoading(false);
@@ -160,13 +200,84 @@ export default function Home() {
   );
 
   const handleDrop = useCallback(
-    (e: React.DragEvent) => {
+    async (e: React.DragEvent) => {
       e.preventDefault();
-      const file = e.dataTransfer.files[0];
-      if (file) handleFileSelect(file);
+      
+      const items = e.dataTransfer.items;
+      const files: File[] = [];
+      
+      // Process all dropped items
+      if (items) {
+        for (let i = 0; i < items.length; i++) {
+          const item = items[i];
+          
+          if (item.kind === 'file') {
+            const entry = item.webkitGetAsEntry?.();
+            
+            if (entry?.isDirectory) {
+              // It's a directory - read all files recursively
+              await readDirectory(entry as FileSystemDirectoryEntry, files);
+            } else {
+              // It's a file
+              const file = item.getAsFile();
+              if (file) files.push(file);
+            }
+          }
+        }
+      } else {
+        // Fallback to simple file list
+        const fileList = e.dataTransfer.files;
+        for (let i = 0; i < fileList.length; i++) {
+          files.push(fileList[i]);
+        }
+      }
+      
+      if (files.length > 0) {
+        console.log(`Dropped ${files.length} files`);
+        const fileList = createFileList(files);
+        handleFileSelect(fileList);
+      }
     },
     [handleFileSelect]
   );
+  
+  // Helper to read directory recursively
+  const readDirectory = async (entry: FileSystemDirectoryEntry, files: File[]) => {
+    const reader = entry.createReader();
+    
+    return new Promise<void>((resolve) => {
+      const readEntries = () => {
+        reader.readEntries(async (entries) => {
+          if (entries.length === 0) {
+            resolve();
+            return;
+          }
+          
+          for (const entry of entries) {
+            if (entry.isFile) {
+              const file = await new Promise<File>((resolve) => {
+                (entry as FileSystemFileEntry).file(resolve);
+              });
+              files.push(file);
+            } else if (entry.isDirectory) {
+              await readDirectory(entry as FileSystemDirectoryEntry, files);
+            }
+          }
+          
+          readEntries(); // Continue reading
+        });
+      };
+      
+      readEntries();
+    });
+  };
+  
+  // Helper to create FileList from File array
+  const createFileList = (files: File[]): FileList => {
+    const dataTransfer = new DataTransfer();
+    files.forEach(file => dataTransfer.items.add(file));
+    return dataTransfer.files;
+  };
 
   const handleTextSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -285,6 +396,68 @@ export default function Home() {
     }
   };
 
+  const handleSliceChange = useCallback(
+    async (newSliceIndex: number) => {
+      if (!sessionId || newSliceIndex === currentSlice) return;
+
+      setError(null);
+      setIsLoading(true);
+
+      try {
+        const response = await changeSlice(sessionId, newSliceIndex);
+        setCurrentSlice(newSliceIndex);
+        
+        // Check if we have a propagated mask for this slice
+        if (propagatedSlices.includes(newSliceIndex)) {
+          try {
+            const maskResponse = await getVolumeMask(sessionId, newSliceIndex);
+            setResult(maskResponse.results);
+          } catch {
+            setResult(response.results);
+          }
+        } else {
+          setResult(response.results);
+        }
+        
+        setImageWidth(response.width || imageWidth);
+        setImageHeight(response.height || imageHeight);
+        
+        // Update image URL for DICOM
+        if (isDicom) {
+          const imageUrl = `${process.env.NEXT_PUBLIC_API_URL || "http://localhost:8000"}/slice-image/${sessionId}?slice_index=${newSliceIndex}&t=${Date.now()}`;
+          setImageUrl(imageUrl);
+        }
+        
+        addTiming(`Slice ${newSliceIndex + 1}`, response.processing_time_ms);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to change slice");
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [sessionId, currentSlice, imageWidth, imageHeight, isDicom, addTiming, propagatedSlices]
+  );
+
+  const handlePropagate = useCallback(
+    async () => {
+      if (!sessionId || !isVolume) return;
+
+      setError(null);
+      setIsLoading(true);
+
+      try {
+        const response = await propagateMasks(sessionId, "both");
+        setPropagatedSlices(response.propagated_slices);
+        addTiming(`Propagate (${response.total_propagated} slices)`, response.processing_time_ms);
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to propagate masks");
+      } finally {
+        setIsLoading(false);
+      }
+    },
+    [sessionId, isVolume, addTiming]
+  );
+
   const maskCount = result?.masks?.length ?? 0;
 
   // Calculate average inference time (excluding upload)
@@ -357,26 +530,101 @@ export default function Home() {
               >
                 <Upload className="w-8 h-8 mx-auto mb-2 text-muted-foreground" />
                 <p className="text-sm text-muted-foreground">
-                  Click or drop image here
+                  Click or drop image/DICOM here
                 </p>
                 <input
                   ref={fileInputRef}
                   type="file"
-                  accept="image/*"
+                  accept="image/*,.dcm,.dicom"
+                  multiple
                   onChange={(e) => {
-                    const file = e.target.files?.[0];
-                    if (file) handleFileSelect(file);
+                    const files = e.target.files;
+                    if (files && files.length > 0) handleFileSelect(files);
                   }}
                   className="hidden"
                 />
               </div>
               {imageWidth > 0 && (
-                <p className="text-xs text-muted-foreground mt-2 text-center">
-                  {imageWidth} × {imageHeight} px
-                </p>
+                <div className="mt-2 space-y-1">
+                  <p className="text-xs text-muted-foreground text-center">
+                    {imageWidth} × {imageHeight} px
+                  </p>
+                  {isDicom && (
+                    <p className="text-xs text-primary text-center font-medium">
+                      DICOM {isVolume ? `Volume (${totalSlices} slices)` : 'Image'}
+                    </p>
+                  )}
+                </div>
               )}
             </CardContent>
           </Card>
+
+          {/* Volume Slice Navigator Card */}
+          {isVolume && totalSlices > 1 && (
+            <Card>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Layers className="w-4 h-4" />
+                  Volume Slices
+                </CardTitle>
+              </CardHeader>
+              <CardContent className="space-y-3">
+                <div className="flex items-center justify-between text-sm">
+                  <span className="text-muted-foreground">Current Slice:</span>
+                  <span className="font-medium text-primary">
+                    {currentSlice + 1} / {totalSlices}
+                  </span>
+                </div>
+                <input
+                  type="range"
+                  min="0"
+                  max={totalSlices - 1}
+                  value={currentSlice}
+                  onChange={(e) => handleSliceChange(parseInt(e.target.value))}
+                  disabled={isLoading}
+                  className="w-full h-2 bg-border rounded-lg appearance-none cursor-pointer accent-primary disabled:opacity-50 disabled:cursor-not-allowed"
+                />
+                <div className="flex gap-2">
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleSliceChange(Math.max(0, currentSlice - 1))}
+                    disabled={currentSlice === 0 || isLoading}
+                    className="flex-1"
+                  >
+                    <ChevronLeft className="w-4 h-4 mr-1" />
+                    Previous
+                  </Button>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={() => handleSliceChange(Math.min(totalSlices - 1, currentSlice + 1))}
+                    disabled={currentSlice === totalSlices - 1 || isLoading}
+                    className="flex-1"
+                  >
+                    Next
+                    <ChevronRight className="w-4 h-4 ml-1" />
+                  </Button>
+                </div>
+                {/* 3D Propagation */}
+                <Button
+                  size="sm"
+                  variant="default"
+                  onClick={handlePropagate}
+                  disabled={isLoading || !result?.masks?.length}
+                  className="w-full"
+                >
+                  <Layers className="w-4 h-4 mr-2" />
+                  Propagate to Volume
+                </Button>
+                {propagatedSlices.length > 0 && (
+                  <p className="text-xs text-muted-foreground text-center">
+                    Masks on {propagatedSlices.length} / {totalSlices} slices
+                  </p>
+                )}
+              </CardContent>
+            </Card>
+          )}
 
           {/* Medical Modality Card */}
           <Card>

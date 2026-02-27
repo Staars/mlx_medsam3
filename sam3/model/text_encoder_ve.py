@@ -144,7 +144,7 @@ def text_global_pool(
     elif pool_type == "argmax":
         # take features from the eot embedding (eot_token is the highest number in each sequence)
         assert text is not None
-        pooled, tokens = x[mx.arange(x.shape[0]), text.argmax(dim=-1)], x
+        pooled, tokens = x[mx.arange(x.shape[0]), text.argmax(axis=-1)], x
     else:
         pooled = tokens = x
     return pooled, tokens

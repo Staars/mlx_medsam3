@@ -64,7 +64,7 @@ class TransformerEncoderLayer(nn.Module):
 
         # self attention
         tgt2 = self.self_attn(
-            q, k, value=tgt, attn_mask=tgt_mask, key_padding_mask=tgt_key_padding_mask
+            q, k, values=tgt, attn_mask=tgt_mask, key_padding_mask=tgt_key_padding_mask
         )
         tgt = tgt + self.dropout1(tgt2)
         tgt = self.norm1(tgt)
@@ -112,7 +112,7 @@ class TransformerEncoderLayer(nn.Module):
         tgt = tgt + self.dropout1(tgt2)
         if dac:
             # Recombine
-            tgt = mx.cat((tgt, other_tgt), dim=0)
+            tgt = mx.concat([tgt, other_tgt], axis=0)
         tgt2 = self.norm2(tgt)
         tgt2 = self.cross_attn_image(
             queries=tgt2 + query_pos if self.pos_enc_at_cross_attn_queries else tgt2,
@@ -208,7 +208,7 @@ class TransformerEncoder(nn.Module):
                 mask = mask.flatten(1)
             pos_embed = pos_embed.flatten(2).transpose(0, 2, 1)
             if self.level_embed is not None:
-                lvl_pos_embed = pos_embed + self.level_embed[lvl].view(1, 1, -1)
+                lvl_pos_embed = pos_embed + self.level_embed[lvl].reshape(1, 1, -1)
             else:
                 lvl_pos_embed = pos_embed
             lvl_pos_embed_flatten.append(lvl_pos_embed)
@@ -405,16 +405,16 @@ class TransformerEncoderFusion(TransformerEncoder):
 def pool_text_feat(prompt, prompt_mask, pool_with_mask):
     # prompt has shape (seq, bs, dim)
     if not pool_with_mask:
-        return prompt.mean(dim=0)
+        return mx.mean(prompt, axis=0)
 
     # prompt_mask has shape (bs, seq), where False is valid and True is padding
-    assert prompt_mask.dim() == 2
+    assert prompt_mask.ndim == 2
     # is_valid has shape (seq, bs, 1), where 1 is valid and 0 is padding
-    is_valid = (~prompt_mask).float().permute(1, 0)[..., None]
+    is_valid = (~prompt_mask).astype(mx.float32).transpose(1, 0)[..., None]
     # num_valid has shape (bs, 1)
-    num_valid = mx.clip(mx.sum(is_valid, dim=0), min=1.0)
+    num_valid = mx.clip(mx.sum(is_valid, axis=0), a_min=1.0, a_max=None)
 
     # mean pool over all the valid tokens
-    pooled_text = (prompt * is_valid).sum(dim=0) / num_valid
+    pooled_text = mx.sum(prompt * is_valid, axis=0) / num_valid
     return pooled_text
     

@@ -15,10 +15,6 @@ from sam3.medical_utils import (
     get_medical_prompt_suggestions
 )
 
-# TODO: remove this, using for testing
-import torch
-from torchvision.transforms import v2
-
 
 def transform(image_path_or_pil, resolution, modality=None):
     if isinstance(image_path_or_pil, str):
@@ -213,6 +209,199 @@ class Sam3Processor:
     def get_medical_suggestions(self) -> List[str]:
         """Get suggested medical prompts for current modality."""
         return get_medical_prompt_suggestions(self.modality)
+
+    def set_image_mlx(self, image_mlx: mx.array, state=None):
+        """Set image from an MLX array (avoids PIL roundtrip for volume slices).
+        
+        Args:
+            image_mlx: MLX array of shape (H, W) grayscale or (H, W, 3) RGB,
+                       already in uint8 [0,255] or float [0,1] range.
+            state: Optional existing state dict.
+        """
+        if state is None:
+            state = {}
+        
+        image_tensor, height, width = self._prepare_slice_tensor(image_mlx)
+        
+        state["original_height"] = height
+        state["original_width"] = width
+        
+        start = time.perf_counter()
+        state["backbone_out"] = self.model.backbone.call_image(image_tensor)
+        mx.eval(state)
+        elapsed = time.perf_counter() - start
+        print(f"Backbone pass (MLX) took {elapsed:.2f} Seconds")
+        
+        return state
+
+    def _prepare_slice_tensor(self, slice_mlx: mx.array):
+        """Prepare a single slice as a model-ready (1, 3, H, W) tensor.
+        
+        Returns (image_tensor, height, width).
+        """
+        if slice_mlx.ndim == 2:
+            height, width = slice_mlx.shape
+        else:
+            height, width = slice_mlx.shape[:2]
+        
+        # Convert to float32 [0,1] if needed
+        if slice_mlx.dtype == mx.uint8:
+            img = slice_mlx.astype(mx.float32) / 255.0
+        elif slice_mlx.dtype in (mx.int16, mx.int32, mx.uint16):
+            min_val = mx.min(slice_mlx).item()
+            max_val = mx.max(slice_mlx).item()
+            if max_val > min_val:
+                img = (slice_mlx.astype(mx.float32) - min_val) / (max_val - min_val)
+            else:
+                img = mx.zeros_like(slice_mlx, dtype=mx.float32)
+        else:
+            img = slice_mlx
+        
+        # Ensure 3 channels
+        if img.ndim == 2:
+            img = mx.stack([img, img, img], axis=-1)
+        elif img.shape[-1] == 1:
+            img = mx.repeat(img, repeats=3, axis=-1)
+        
+        # Resize to model resolution
+        import mlx.nn as nn_mod
+        img_batch = img[None]
+        scale_h = self.resolution / height
+        scale_w = self.resolution / width
+        upsample = nn_mod.Upsample(scale_factor=(scale_h, scale_w), mode="linear", align_corners=False)
+        img_resized = upsample(img_batch)[0]
+        
+        # Normalize to [-1, 1] and convert to (1, 3, H, W)
+        img_resized = (img_resized - 0.5) / 0.5
+        image_tensor = img_resized.transpose(2, 0, 1)[None]
+        
+        return image_tensor, height, width
+
+    def propagate_to_volume(
+        self,
+        volume_mlx: mx.array,
+        source_slice: int,
+        source_state: Dict,
+        direction: str = "both",
+    ) -> Dict[int, Dict]:
+        """Propagate segmentation from source slice to adjacent slices.
+        
+        Pre-computes backbone features for all target slices, then runs
+        the lightweight grounding (encoder+decoder) per slice using
+        centroid prompts from the previous slice.
+        
+        Args:
+            volume_mlx: MLX array of shape (num_slices, H, W) or (num_slices, H, W, C)
+            source_slice: Index of the already-segmented slice
+            source_state: State dict from the source slice (must contain masks)
+            direction: "forward", "backward", or "both"
+            
+        Returns:
+            Dict mapping slice_index → state dict with masks
+        """
+        if "masks" not in source_state:
+            raise ValueError("Source state must contain segmentation masks")
+        
+        num_slices = volume_mlx.shape[0]
+        volume_states = {source_slice: source_state}
+        
+        # Determine which slices we need to process
+        target_indices = []
+        if direction in ("forward", "both"):
+            target_indices.extend(range(source_slice + 1, num_slices))
+        if direction in ("backward", "both"):
+            target_indices.extend(range(source_slice - 1, -1, -1))
+        
+        if not target_indices:
+            return volume_states
+        
+        # Phase 1: Pre-compute backbone features for all target slices
+        print(f"  Pre-computing backbone features for {len(target_indices)} slices...")
+        backbone_cache = {}
+        start = time.perf_counter()
+        for idx in target_indices:
+            slice_mlx = volume_mlx[idx]
+            image_tensor, height, width = self._prepare_slice_tensor(slice_mlx)
+            backbone_out = self.model.backbone.call_image(image_tensor)
+            mx.eval(backbone_out)
+            backbone_cache[idx] = {
+                "backbone_out": backbone_out,
+                "original_height": height,
+                "original_width": width,
+            }
+        elapsed = time.perf_counter() - start
+        print(f"  Backbone pre-computation: {elapsed:.2f}s ({elapsed/len(target_indices):.2f}s/slice)")
+        
+        # Pre-compute text features once (shared across all slices)
+        text_outputs = self.model.backbone.call_text(["visual"])
+        mx.eval(text_outputs)
+        
+        def _get_mask_centroid(state):
+            """Get normalized centroid of the largest mask."""
+            masks = state["masks"]
+            if len(masks.shape) < 2:
+                return None
+            mask = np.array(masks[0])
+            if mask.ndim == 3:
+                mask = mask[0]
+            ys, xs = np.where(mask > 0.5)
+            if len(ys) == 0:
+                return None
+            cy = float(np.mean(ys)) / mask.shape[0]
+            cx = float(np.mean(xs)) / mask.shape[1]
+            return [cx, cy]
+        
+        # Phase 2: Run lightweight grounding per slice using cached backbone features
+        def _propagate_direction(start_slice, end_slice, step):
+            prev_state = volume_states[start_slice]
+            
+            for idx in range(start_slice + step, end_slice, step):
+                centroid = _get_mask_centroid(prev_state)
+                if centroid is None:
+                    break
+                
+                if idx not in backbone_cache:
+                    break
+                
+                # Build state from cached backbone features
+                cached = backbone_cache[idx]
+                new_state = {
+                    "original_height": cached["original_height"],
+                    "original_width": cached["original_width"],
+                    "backbone_out": dict(cached["backbone_out"]),
+                }
+                
+                # Inject cached text features
+                new_state["backbone_out"].update(text_outputs)
+                
+                # Set up geometric prompt with centroid point
+                new_state["geometric_prompt"] = self.model._get_dummy_prompt()
+                points = mx.array(centroid, dtype=mx.float32).reshape(1, 1, 2)
+                labels = mx.array([True], dtype=mx.bool_).reshape(1, 1)
+                new_state["geometric_prompt"].append_points(points, labels)
+                
+                # Run grounding only (encoder + decoder, no backbone)
+                new_state = self._call_grounding(new_state)
+                mx.eval(new_state["masks"])
+                
+                if "masks" not in new_state or len(new_state["scores"]) == 0:
+                    break
+                
+                volume_states[idx] = new_state
+                prev_state = new_state
+                print(f"  Propagated to slice {idx}, found {len(new_state['scores'])} objects")
+        
+        start = time.perf_counter()
+        if direction in ("forward", "both"):
+            _propagate_direction(source_slice, num_slices, 1)
+        if direction in ("backward", "both"):
+            _propagate_direction(source_slice, -1, -1)
+        elapsed = time.perf_counter() - start
+        grounded = len(volume_states) - 1
+        if grounded > 0:
+            print(f"  Grounding pass: {elapsed:.2f}s ({elapsed/grounded:.2f}s/slice)")
+        
+        return volume_states
 
     def _call_grounding(self, state: Dict):
         outputs = self.model.call_grounding(

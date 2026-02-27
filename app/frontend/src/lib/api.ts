@@ -4,8 +4,14 @@ export interface UploadResponse {
   session_id: string;
   width: number;
   height: number;
+  total_slices: number;
+  current_slice: number;
+  is_volume: boolean;
+  is_dicom: boolean;
+  modality: string;
   message: string;
   processing_time_ms: number;
+  peak_memory_mb: number;
 }
 
 export interface RLEMask {
@@ -28,8 +34,13 @@ export interface SegmentResponse {
   prompt?: string;
   box_type?: string;
   point_type?: string;
+  slice_index?: number;
+  total_slices?: number;
+  width?: number;
+  height?: number;
   results: SegmentationResult;
   processing_time_ms: number;
+  peak_memory_mb?: number;
 }
 
 export interface ResetResponse {
@@ -53,7 +64,7 @@ async function apiFetch<T>(fetchFn: () => Promise<Response>): Promise<T> {
 
 export async function uploadImage(file: File): Promise<UploadResponse> {
   const formData = new FormData();
-  formData.append("file", file);
+  formData.append("files", file);
 
   return apiFetch<UploadResponse>(() =>
     fetch(`${API_BASE}/upload`, {
@@ -168,5 +179,68 @@ export async function setModality(
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ session_id: sessionId, modality }),
     })
+  );
+}
+
+// Volume/Slice APIs
+export interface VolumeInfoResponse {
+  session_id: string;
+  total_slices: number;
+  current_slice: number;
+  is_dicom: boolean;
+  is_volume: boolean;
+  modality: string;
+  image_size: [number, number];
+}
+
+export async function changeSlice(
+  sessionId: string,
+  sliceIndex: number
+): Promise<SegmentResponse> {
+  return apiFetch<SegmentResponse>(() =>
+    fetch(`${API_BASE}/slice`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, slice_index: sliceIndex }),
+    })
+  );
+}
+
+export async function getVolumeInfo(sessionId: string): Promise<VolumeInfoResponse> {
+  return apiFetch<VolumeInfoResponse>(() =>
+    fetch(`${API_BASE}/volume-info/${sessionId}`)
+  );
+}
+
+// 3D Propagation APIs
+export interface PropagateResponse {
+  session_id: string;
+  source_slice: number;
+  propagated_slices: number[];
+  total_propagated: number;
+  direction: string;
+  processing_time_ms: number;
+  peak_memory_mb: number;
+}
+
+export async function propagateMasks(
+  sessionId: string,
+  direction: string = "both"
+): Promise<PropagateResponse> {
+  return apiFetch<PropagateResponse>(() =>
+    fetch(`${API_BASE}/propagate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ session_id: sessionId, direction }),
+    })
+  );
+}
+
+export async function getVolumeMask(
+  sessionId: string,
+  sliceIndex: number
+): Promise<SegmentResponse> {
+  return apiFetch<SegmentResponse>(() =>
+    fetch(`${API_BASE}/volume-masks/${sessionId}/${sliceIndex}`)
   );
 }
